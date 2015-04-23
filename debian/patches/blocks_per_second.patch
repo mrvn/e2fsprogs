@@ -1,0 +1,139 @@
+Description: add speed output to badblocks
+   * badblocks: Add blocks/s output with -s -s.
+Author: Goswin von Brederlow <goswin-v-b@web.de>
+
+---
+
+Index: e2fsprogs-1.42.12/misc/badblocks.c
+===================================================================
+--- e2fsprogs-1.42.12.orig/misc/badblocks.c	2015-04-19 16:39:17.000000000 +0200
++++ e2fsprogs-1.42.12/misc/badblocks.c	2015-04-20 18:24:05.120326874 +0200
+@@ -81,6 +81,7 @@
+ static unsigned int max_bb;		/* Abort test if more than this number of bad blocks has been encountered */
+ static unsigned int d_flag;		/* delay factor between reads */
+ static struct timeval time_start;
++static struct timeval time_last;
+ 
+ #define T_INC 32
+ 
+@@ -89,7 +90,7 @@
+ static void usage(void)
+ {
+ 	fprintf(stderr, _(
+-"Usage: %s [-b block_size] [-i input_file] [-o output_file] [-svwnf]\n"
++"Usage: %s [-b block_size] [-i input_file] [-o output_file] [-svwnfx]\n"
+ "       [-c blocks_at_once] [-d delay_factor_between_reads] [-e max_bad_blocks]\n"
+ "       [-p num_passes] [-t test_pattern [-t test_pattern [...]]]\n"
+ "       device [last_block [first_block]]\n"),
+@@ -207,6 +208,19 @@
+ 	return percent;
+ }
+ 
++static double calc_speed(blk_t blocks, struct timeval *end,
++			 struct timeval *start)
++{
++	double diff =
++	    end->tv_sec - start->tv_sec
++	    + ((double)end->tv_usec - start->tv_usec) / 1000000.0;
++	if (diff != 0.0) {
++		return blocks / diff;
++	} else {
++		return 0.0;
++	}
++}
++
+ static void print_status(void)
+ {
+ 	struct timeval time_end;
+@@ -223,13 +237,31 @@
+ 		       num_read_errors,
+ 		       num_write_errors,
+ 		       num_corruption_errors);
++	fputs(line_buf, stderr);
++	if (s_flag <= 1) {
+ #ifdef HAVE_MBSTOWCS
+-	len = mbstowcs(NULL, line_buf, sizeof(line_buf));
++		len = mbstowcs(NULL, line_buf, sizeof(line_buf));
+ #endif
+-	fputs(line_buf, stderr);
+-	memset(line_buf, '\b', len);
+-	line_buf[len] = 0;
+-	fputs(line_buf, stderr);	
++		memset(line_buf, '\b', len);
++		line_buf[len] = 0;
++		fputs(line_buf, stderr);
++	} else {
++		static blk_t currently_testing_last = 0;
++		if (currently_testing_last <= currently_testing) {
++			len = snprintf(line_buf, sizeof(line_buf),
++				       _(" %lf blocks/s\n"),
++				       calc_speed(currently_testing
++						  - currently_testing_last,
++						  &time_end, &time_last));
++			fputs(line_buf, stderr);
++		} else {
++			line_buf[0] = '\n';
++			line_buf[1] = 0;
++			fputs(line_buf, stderr);
++		}
++		memcpy(&time_last, &time_end, sizeof(time_last));
++		currently_testing_last = currently_testing;
++	}
+ 	fflush (stderr);
+ }
+ 
+@@ -344,6 +376,9 @@
+ 			fputs(": ", stderr);
+ 		}
+ 	}
++	if (s_flag > 1) {
++		fputs("\n", stderr);
++	}
+ }
+ 
+ /*
+@@ -667,7 +702,10 @@
+ 			fputs(_(done_string), stderr);
+ 		flush_bufs();
+ 		if (s_flag | v_flag)
+-			fputs(_("Reading and comparing: "), stderr);
++			fputs(_("Reading and comparing pattern: "), stderr);
++		if (s_flag > 1) {
++			fputs("\n", stderr);
++		}
+ 		num_blocks = last_block;
+ 		currently_testing = first_block;
+ 		if (s_flag && v_flag <= 1)
+@@ -1095,7 +1133,7 @@
+ 			output_file = optarg;
+ 			break;
+ 		case 's':
+-			s_flag = 1;
++			s_flag++;
+ 			break;
+ 		case 'v':
+ 			v_flag++;
+@@ -1221,6 +1259,7 @@
+ 		check_mount(device_name);
+ 
+ 	gettimeofday(&time_start, 0);
++	memcpy(&time_last, &time_start, sizeof(time_last));
+ 	open_flag = O_LARGEFILE | (w_flag ? O_RDWR : O_RDONLY);
+ 	dev = open (device_name, open_flag);
+ 	if (dev == -1) {
+Index: e2fsprogs-1.42.12/misc/badblocks.8.in
+===================================================================
+--- e2fsprogs-1.42.12.orig/misc/badblocks.8.in	2015-04-19 17:07:56.711652520 +0200
++++ e2fsprogs-1.42.12/misc/badblocks.8.in	2015-04-19 17:08:10.939644485 +0200
+@@ -158,8 +158,9 @@
+ .TP
+ .B \-s
+ Show the progress of the scan by writing out rough percentage completion
+-of the current badblocks pass over the disk.  Note that badblocks may do
+-multiple test passes over the disk, in particular if the
++of the current badblocks pass over the disk.  Use twice to also get a
++speed estimate in blocks/s. Note that badblocks may do multiple test
++passes over the disk, in particular if the
+ .B \-p
+ or
+ .B \-w
