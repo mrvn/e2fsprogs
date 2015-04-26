@@ -132,10 +132,9 @@ static void open_filesystem(char *device, int open_flags, blk64_t superblock,
 	return;
 
 errout:
-	retval = ext2fs_close(current_fs);
+	retval = ext2fs_close_free(&current_fs);
 	if (retval)
 		com_err(device, retval, "while trying to close filesystem");
-	current_fs = NULL;
 }
 
 void do_open_filesys(int argc, char **argv)
@@ -241,10 +240,9 @@ static void close_filesystem(NOARGS)
 	}
 	if (current_qctx)
 		quota_release_context(&current_qctx);
-	retval = ext2fs_close(current_fs);
+	retval = ext2fs_close_free(&current_fs);
 	if (retval)
 		com_err("ext2fs_close", retval, 0);
-	current_fs = NULL;
 	return;
 }
 
@@ -1578,10 +1576,11 @@ void do_find_free_inode(int argc, char *argv[])
 }
 
 #ifndef READ_ONLY
-static errcode_t copy_file(int fd, ext2_ino_t newfile, int bufsize, int make_holes)
+static errcode_t copy_file(int fd, ext2_ino_t newfile, int bufsize,
+			   int make_holes)
 {
 	ext2_file_t	e2_file;
-	errcode_t	retval;
+	errcode_t	retval, close_ret;
 	int		got;
 	unsigned int	written;
 	char		*buf;
@@ -1597,15 +1596,14 @@ static errcode_t copy_file(int fd, ext2_ino_t newfile, int bufsize, int make_hol
 	retval = ext2fs_get_mem(bufsize, &buf);
 	if (retval) {
 		com_err("copy_file", retval, "can't allocate buffer\n");
-		return retval;
+		goto out_close;
 	}
 
 	/* This is used for checking whether the whole block is zero */
 	retval = ext2fs_get_memzero(bufsize, &zero_buf);
 	if (retval) {
-		com_err("copy_file", retval, "can't allocate buffer\n");
-		ext2fs_free_mem(&buf);
-		return retval;
+		com_err("copy_file", retval, "can't allocate zero buffer\n");
+		goto out_free_buf;
 	}
 
 	while (1) {
@@ -1624,7 +1622,8 @@ static errcode_t copy_file(int fd, ext2_ino_t newfile, int bufsize, int make_hol
 			cmp = memcmp(ptr, zero_buf, got);
 			if (cmp == 0) {
 				 /* The whole block is zero, make a hole */
-				retval = ext2fs_file_lseek(e2_file, got, EXT2_SEEK_CUR, NULL);
+				retval = ext2fs_file_lseek(e2_file, got,
+							   EXT2_SEEK_CUR, NULL);
 				if (retval)
 					goto fail;
 				got = 0;
@@ -1642,15 +1641,15 @@ static errcode_t copy_file(int fd, ext2_ino_t newfile, int bufsize, int make_hol
 			ptr += written;
 		}
 	}
-	ext2fs_free_mem(&buf);
-	ext2fs_free_mem(&zero_buf);
-	retval = ext2fs_file_close(e2_file);
-	return retval;
 
 fail:
-	ext2fs_free_mem(&buf);
 	ext2fs_free_mem(&zero_buf);
-	(void) ext2fs_file_close(e2_file);
+out_free_buf:
+	ext2fs_free_mem(&buf);
+out_close:
+	close_ret = ext2fs_file_close(e2_file);
+	if (retval == 0)
+		retval = close_ret;
 	return retval;
 }
 

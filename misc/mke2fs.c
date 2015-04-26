@@ -178,7 +178,8 @@ static int parse_version_number(const char *s)
 	return KERNEL_VERSION(major, minor, rev);
 }
 
-static int is_before_linux_ver(unsigned int major, unsigned int minor)
+static int is_before_linux_ver(unsigned int major, unsigned int minor,
+			       unsigned int rev)
 {
 	struct		utsname ut;
 	static int	linux_version_code = -1;
@@ -192,10 +193,11 @@ static int is_before_linux_ver(unsigned int major, unsigned int minor)
 	if (linux_version_code == 0)
 		return 0;
 
-	return linux_version_code < KERNEL_VERSION(major, minor, 0);
+	return linux_version_code < KERNEL_VERSION(major, minor, rev);
 }
 #else
-static int is_before_linux_ver(unsigned int major, unsigned int minor)
+static int is_before_linux_ver(unsigned int major, unsigned int minor,
+			       unsigned int rev)
 {
 	return 0;
 }
@@ -822,7 +824,7 @@ static void parse_extended_opts(struct ext2_super_block *param,
 			if (*p || num_backups > 2) {
 				fprintf(stderr,
 					_("Invalid # of backup "
-					  "superbocks: %s\n"),
+					  "superblocks: %s\n"),
 					arg);
 				r_usage++;
 				continue;
@@ -1308,6 +1310,18 @@ int get_int_from_profile(char **types, const char *opt, int def_val)
 	return ret;
 }
 
+static unsigned int get_uint_from_profile(char **types, const char *opt,
+					unsigned int def_val)
+{
+	unsigned int ret;
+	char **cpp;
+
+	profile_get_uint(profile, "defaults", opt, 0, def_val, &ret);
+	for (cpp = types; *cpp; cpp++)
+		profile_get_uint(profile, "fs_types", *cpp, opt, ret, &ret);
+	return ret;
+}
+
 static double get_double_from_profile(char **types, const char *opt,
 				      double def_val)
 {
@@ -1485,7 +1499,7 @@ profile_error:
 	memset(&fs_param, 0, sizeof(struct ext2_super_block));
 	fs_param.s_rev_level = 1;  /* Create revision 1 filesystems now */
 
-	if (is_before_linux_ver(2, 2))
+	if (is_before_linux_ver(2, 2, 0))
 		fs_param.s_rev_level = 0;
 
 	if (argc && *argv) {
@@ -1568,6 +1582,12 @@ profile_error:
 			    (flex_bg_size & (flex_bg_size-1)) != 0) {
 				com_err(program_name, 0, "%s",
 					_("flex_bg size must be a power of 2"));
+				exit(1);
+			}
+			if (flex_bg_size > MAX_32_NUM) {
+				com_err(program_name, 0,
+				_("flex_bg size (%lu) must be less than"
+				" or equal to 2^31"), flex_bg_size);
 				exit(1);
 			}
 			break;
@@ -1659,6 +1679,11 @@ profile_error:
 					_("bad revision level - %s"), optarg);
 				exit(1);
 			}
+			if (r_opt > EXT2_MAX_SUPP_REV) {
+				com_err(program_name, EXT2_ET_REV_TOO_HIGH,
+					_("while trying to create revision %d"), r_opt);
+				exit(1);
+			}
 			fs_param.s_rev_level = r_opt;
 			break;
 		case 's':	/* deprecated */
@@ -1746,7 +1771,7 @@ profile_error:
 		printf(_("Using journal device's blocksize: %d\n"), blocksize);
 		fs_param.s_log_block_size =
 			int_log2(blocksize >> EXT2_MIN_BLOCK_LOG_SIZE);
-		ext2fs_close(jfs);
+		ext2fs_close_free(&jfs);
 	}
 
 	if (optind < argc) {
@@ -1904,7 +1929,7 @@ profile_error:
 
 		if (use_bsize == -1) {
 			use_bsize = sys_page_size;
-			if (is_before_linux_ver(2, 6) && use_bsize > 4096)
+			if (is_before_linux_ver(2, 6, 0) && use_bsize > 4096)
 				use_bsize = 4096;
 		}
 		if (lsector_size && use_bsize < lsector_size)
@@ -2099,7 +2124,15 @@ profile_error:
 			blocksize, sys_page_size);
 	}
 
-	lazy_itable_init = 0;
+	/*
+	 * On newer kernels we do have lazy_itable_init support. So pick the
+	 * right default in case ext4 module is not loaded.
+	 */
+	if (is_before_linux_ver(2, 6, 37))
+		lazy_itable_init = 0;
+	else
+		lazy_itable_init = 1;
+
 	if (access("/sys/fs/ext4/features/lazy_itable_init", R_OK) == 0)
 		lazy_itable_init = 1;
 
@@ -2196,8 +2229,8 @@ profile_error:
 		inode_size = get_int_from_profile(fs_types, "inode_size", 0);
 	if (!flex_bg_size && (fs_param.s_feature_incompat &
 			      EXT4_FEATURE_INCOMPAT_FLEX_BG))
-		flex_bg_size = get_int_from_profile(fs_types,
-						    "flex_bg_size", 16);
+		flex_bg_size = get_uint_from_profile(fs_types,
+						     "flex_bg_size", 16);
 	if (flex_bg_size) {
 		if (!(fs_param.s_feature_incompat &
 		      EXT4_FEATURE_INCOMPAT_FLEX_BG)) {
@@ -2703,7 +2736,7 @@ int main (int argc, char *argv[])
 	if (fs->super->s_feature_incompat &
 	    EXT3_FEATURE_INCOMPAT_JOURNAL_DEV) {
 		create_journal_dev(fs);
-		exit(ext2fs_close(fs) ? 1 : 0);
+		exit(ext2fs_close_free(&fs) ? 1 : 0);
 	}
 
 	if (bad_blocks_filename)
@@ -2825,7 +2858,7 @@ int main (int argc, char *argv[])
 		}
 		if (!quiet)
 			printf("%s", _("done\n"));
-		ext2fs_close(jfs);
+		ext2fs_close_free(&jfs);
 		free(journal_device);
 	} else if ((journal_size) ||
 		   (fs_param.s_feature_compat &
@@ -2880,7 +2913,7 @@ no_journal:
 				       EXT4_FEATURE_RO_COMPAT_QUOTA))
 		create_quota_inodes(fs);
 
-	retval = mk_hugefiles(fs);
+	retval = mk_hugefiles(fs, device_name);
 	if (retval)
 		com_err(program_name, retval, "while creating huge files");
 
@@ -2889,7 +2922,7 @@ no_journal:
 		       "filesystem accounting information: "));
 	checkinterval = fs->super->s_checkinterval;
 	max_mnt_count = fs->super->s_max_mnt_count;
-	retval = ext2fs_close(fs);
+	retval = ext2fs_close_free(&fs);
 	if (retval) {
 		fprintf(stderr, "%s",
 			_("\nWarning, had trouble writing out superblocks."));

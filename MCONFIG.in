@@ -67,7 +67,7 @@ pkgconfigdir = $(libdir)/pkgconfig
 
 CC = @CC@
 BUILD_CC = @BUILD_CC@
-CFLAGS = @CFLAGS@
+CFLAGS = @CFLAGS@ @DEFS@
 CPPFLAGS = @INCLUDES@
 ALL_CFLAGS = $(CPPFLAGS) $(CFLAGS)
 LDFLAGS = @LDFLAGS@
@@ -217,8 +217,9 @@ MANMODE=	444
 
 DEP_LIB_MAKEFILES = $(top_srcdir)/lib/Makefile.library \
 	$(top_srcdir)/lib/Makefile.elf-lib  \
-	$(top_srcdir)/lib/Makefile.bsd-lib $(top_srcdir)/lib/Makefile.darwin-lib \
-	$(top_srcdir)/lib/Makefile.solaris-lib $(top_srcdir)/lib/Makefile.checker \
+	$(top_srcdir)/lib/Makefile.bsd-lib \
+	$(top_srcdir)/lib/Makefile.darwin-lib \
+	$(top_srcdir)/lib/Makefile.solaris-lib \
 	$(top_srcdir)/lib/Makefile.profile
 
 $(top_builddir)/config.status: $(top_srcdir)/configure
@@ -264,7 +265,7 @@ clean::
 
 .depend: Makefile $(SRCS) $(top_srcdir)/depfix.sed $(top_srcdir)/wordwrap.pl
 	if test -n "$(SRCS)" ; then \
-		$(CC) -M $(ALL_CFLAGS) $(SRCS) | \
+		$(CC) -M $(ALL_CFLAGS) $(DEPEND_CFLAGS) $(SRCS) | \
 			$(SED) -f $(top_srcdir)/depfix.sed \
 			    -e 's; $(srcdir)/; $$(srcdir)/;g' \
 			    -e 's; $(top_srcdir)/; $$(top_srcdir)/;g' \
