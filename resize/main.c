@@ -318,6 +318,7 @@ int main (int argc, char ** argv)
 		printf("%s", _("Couldn't find valid filesystem superblock.\n"));
 		exit (1);
 	}
+	fs->default_bitmap_type = EXT2FS_BMAP64_RBTREE;
 
 	if (!(mount_flags & EXT2_MF_MOUNTED)) {
 		if (!force && ((fs->super->s_lastcheck < fs->super->s_mtime) ||
@@ -440,8 +441,9 @@ int main (int argc, char ** argv)
 		exit(1);
 	}
 	if (new_size == ext2fs_blocks_count(fs->super)) {
-		fprintf(stderr, _("The filesystem is already %llu blocks "
-			"long.  Nothing to do!\n\n"), new_size);
+		fprintf(stderr, _("The filesystem is already %llu (%dk) "
+			"blocks long.  Nothing to do!\n\n"), new_size,
+			fs->blocksize / 1024);
 		exit(0);
 	}
 	if (mount_flags & EXT2_MF_MOUNTED) {
@@ -467,8 +469,8 @@ int main (int argc, char ** argv)
 		ext2fs_close_free(&fs);
 		exit(1);
 	}
-	printf(_("The filesystem on %s is now %llu blocks long.\n\n"),
-	       device_name, new_size);
+	printf(_("The filesystem on %s is now %llu (%dk) blocks long.\n\n"),
+	       device_name, new_size, fs->blocksize / 1024);
 
 	if ((st_buf.st_size > new_file_size) &&
 	    (fd > 0)) {

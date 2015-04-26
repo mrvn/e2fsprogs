@@ -1718,7 +1718,12 @@ void do_write(int argc, char *argv[])
 	inode.i_atime = inode.i_ctime = inode.i_mtime =
 		current_fs->now ? current_fs->now : time(0);
 	inode.i_links_count = 1;
-	inode.i_size = statbuf.st_size;
+	retval = ext2fs_inode_size_set(current_fs, &inode, statbuf.st_size);
+	if (retval) {
+		com_err(argv[2], retval, 0);
+		close(fd);
+		return;
+	}
 	if (current_fs->super->s_feature_incompat &
 	    EXT3_FEATURE_INCOMPAT_EXTENTS) {
 		int i;
@@ -2145,6 +2150,39 @@ void do_imap(int argc, char *argv[])
 
 }
 
+void do_idump(int argc, char *argv[])
+{
+	ext2_ino_t	ino;
+	unsigned char	*buf;
+	errcode_t	err;
+	int		isize;
+
+	if (common_args_process(argc, argv, 2, 2, argv[0],
+				"<file>", 0))
+		return;
+	ino = string_to_inode(argv[1]);
+	if (!ino)
+		return;
+
+	isize = EXT2_INODE_SIZE(current_fs->super);
+	err = ext2fs_get_mem(isize, &buf);
+	if (err) {
+		com_err(argv[0], err, "while allocating memory");
+		return;
+	}
+
+	err = ext2fs_read_inode_full(current_fs, ino,
+				     (struct ext2_inode *)buf, isize);
+	if (err) {
+		com_err(argv[0], err, "while reading inode %d", ino);
+		goto err;
+	}
+
+	do_byte_hexdump(stdout, buf, isize);
+err:
+	ext2fs_free_mem(&buf);
+}
+
 #ifndef READ_ONLY
 void do_set_current_time(int argc, char *argv[])
 {
@@ -2314,15 +2352,12 @@ try_again:
 
 void do_dump_mmp(int argc EXT2FS_ATTR((unused)), char *argv[])
 {
-	struct ext2_super_block *sb;
 	struct mmp_struct *mmp_s;
 	time_t t;
 	errcode_t retval = 0;
 
 	if (check_fs_open(argv[0]))
 		return;
-
-	sb  = current_fs->super;
 
 	if (current_fs->mmp_buf == NULL) {
 		retval = ext2fs_get_mem(current_fs->blocksize,

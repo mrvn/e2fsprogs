@@ -421,7 +421,7 @@ void check_resize_inode(e2fsck_t ctx)
 		for (j = 1; j < fs->group_desc_count; j++) {
 			if (!ext2fs_bg_has_super(fs, j))
 				continue;
-			expect = pblk + (j * fs->super->s_blocks_per_group);
+			expect = pblk + EXT2_GROUPS_TO_BLOCKS(fs->super, j);
 			if (ind_buf[ind_off] != expect)
 				goto resize_inode_invalid;
 			ind_off++;
@@ -589,6 +589,18 @@ void check_super_block(e2fsck_t ctx)
 		fs->super->s_feature_incompat |=
 			EXT3_FEATURE_INCOMPAT_EXTENTS;
 		ext2fs_mark_super_dirty(fs);
+	}
+
+	if ((fs->super->s_feature_incompat & EXT2_FEATURE_INCOMPAT_META_BG) &&
+	    (fs->super->s_first_meta_bg > fs->desc_blocks)) {
+		pctx.group = fs->desc_blocks;
+		pctx.num = fs->super->s_first_meta_bg;
+		if (fix_problem(ctx, PR_0_FIRST_META_BG_TOO_BIG, &pctx)) {
+			fs->super->s_feature_incompat &=
+				~EXT2_FEATURE_INCOMPAT_META_BG;
+			fs->super->s_first_meta_bg = 0;
+			ext2fs_mark_super_dirty(fs);
+		}
 	}
 
 	/*

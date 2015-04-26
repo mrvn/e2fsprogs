@@ -226,9 +226,11 @@ static int filefrag_fiemap(int fd, int blk_shift, int *num_extents,
 		rc = ioctl(fd, FS_IOC_FIEMAP, (unsigned long) fiemap);
 		if (rc < 0) {
 			static int fiemap_incompat_printed;
+
 			rc = -errno;
 			if (rc == -EBADR && !fiemap_incompat_printed) {
-				printf("FIEMAP failed with unknown flags %#x\n",
+				fprintf(stderr, "FIEMAP failed with unknown "
+						"flags %x\n",
 				       fiemap->fm_flags);
 				fiemap_incompat_printed = 1;
 			}
@@ -327,15 +329,17 @@ static int filefrag_fibmap(int fd, int blk_shift, int *num_extents,
 			print_extent_info(&fm_ext, *num_extents - 1,
 					  (last_block + 1) * st->st_blksize,
 					  blk_shift, st);
-			fm_ext.fe_logical = logical;
-			fm_ext.fe_physical = block * st->st_blksize;
 			fm_ext.fe_length = 0;
 			(*num_extents)++;
-		} else if (verbose && last_block && (block != last_block + 1)) {
-			printf("Discontinuity: Block %ld is at %lu (was %lu)\n",
-			       i, block, last_block + 1);
+		} else if (last_block && (block != last_block + 1)) {
+			if (verbose)
+				printf("Discontinuity: Block %ld is at %lu (was "
+				       "%lu)\n", i, block, last_block + 1);
+			fm_ext.fe_length = 0;
 			(*num_extents)++;
 		}
+		fm_ext.fe_logical = logical;
+		fm_ext.fe_physical = block * st->st_blksize;
 		fm_ext.fe_length += st->st_blksize;
 		last_block = block;
 	}
@@ -350,6 +354,7 @@ static int filefrag_fibmap(int fd, int blk_shift, int *num_extents,
 static int frag_report(const char *filename)
 {
 	static struct statfs fsinfo;
+	static unsigned int blksize;
 	ext2fs_struct_stat st;
 	int		blk_shift;
 	long		fd;
@@ -358,7 +363,6 @@ static int frag_report(const char *filename)
 	int		num_extents = 1, expected = ~0;
 	int		is_ext2 = 0;
 	static dev_t	last_device;
-	unsigned int	flags;
 	int		width;
 	int		rc = 0;
 
@@ -380,37 +384,39 @@ static int frag_report(const char *filename)
 #endif
 		rc = -errno;
 		perror("stat");
-		close(fd);
-		return rc;
+		goto out_close;
 	}
 
 	if (last_device != st.st_dev) {
 		if (fstatfs(fd, &fsinfo) < 0) {
 			rc = -errno;
 			perror("fstatfs");
-			close(fd);
-			return rc;
+			goto out_close;
 		}
+		if (ioctl(fd, FIGETBSZ, &blksize) < 0)
+			blksize = fsinfo.f_bsize;
 		if (verbose)
 			printf("Filesystem type is: %lx\n",
 			       (unsigned long)fsinfo.f_type);
 	}
-	st.st_blksize = fsinfo.f_bsize;
-	if (ioctl(fd, EXT3_IOC_GETFLAGS, &flags) < 0)
-		flags = 0;
-	if (!(flags & EXT4_EXTENTS_FL) &&
-	    ((fsinfo.f_type == 0xef51) || (fsinfo.f_type == 0xef52) ||
-	     (fsinfo.f_type == 0xef53)))
-		is_ext2++;
+	st.st_blksize = blksize;
+	if (fsinfo.f_type == 0xef51 || fsinfo.f_type == 0xef52 ||
+	    fsinfo.f_type == 0xef53) {
+		unsigned int	flags;
+
+		if (ioctl(fd, EXT3_IOC_GETFLAGS, &flags) == 0 &&
+		    !(flags & EXT4_EXTENTS_FL))
+			is_ext2 = 1;
+	}
 
 	if (is_ext2) {
-		long cylgroups = div_ceil(fsinfo.f_blocks, fsinfo.f_bsize * 8);
+		long cylgroups = div_ceil(fsinfo.f_blocks, blksize * 8);
 
 		if (verbose && last_device != st.st_dev)
 			printf("Filesystem cylinder groups approximately %ld\n",
 			       cylgroups);
 
-		data_blocks_per_cyl = fsinfo.f_bsize * 8 -
+		data_blocks_per_cyl = blksize * 8 -
 					(fsinfo.f_files / 8 / cylgroups) - 3;
 	}
 	last_device = st.st_dev;
@@ -419,11 +425,11 @@ static int frag_report(const char *filename)
 	if (width > physical_width)
 		physical_width = width;
 
-	numblocks = (st.st_size + fsinfo.f_bsize - 1) / fsinfo.f_bsize;
+	numblocks = (st.st_size + blksize - 1) / blksize;
 	if (blocksize != 0)
 		blk_shift = int_log2(blocksize);
 	else
-		blk_shift = int_log2(fsinfo.f_bsize);
+		blk_shift = int_log2(blksize);
 
 	width = int_log10(numblocks);
 	if (width > logical_width)
@@ -431,7 +437,7 @@ static int frag_report(const char *filename)
 	if (verbose)
 		printf("File size of %s is %llu (%llu block%s of %d bytes)\n",
 		       filename, (unsigned long long)st.st_size,
-		       numblocks * fsinfo.f_bsize >> blk_shift,
+		       numblocks * blksize >> blk_shift,
 		       numblocks == 1 ? "" : "s", 1 << blk_shift);
 
 	if (!force_bmap) {
@@ -439,7 +445,7 @@ static int frag_report(const char *filename)
 		expected = 0;
 	}
 
-	if (rc < 0) {
+	if (force_bmap || rc < 0) { /* FIEMAP failed, try FIBMAP instead */
 		expected = filefrag_fibmap(fd, blk_shift, &num_extents,
 					   &st, numblocks, is_ext2);
 		if (expected < 0) {
@@ -490,7 +496,7 @@ int main(int argc, char**argv)
 	char **cpp;
 	int rc = 0, c;
 
-	while ((c = getopt(argc, argv, "Bb::eksvxX")) != EOF)
+	while ((c = getopt(argc, argv, "Bb::eksvxX")) != EOF) {
 		switch (c) {
 		case 'B':
 			force_bmap++;
@@ -549,6 +555,7 @@ int main(int argc, char**argv)
 			usage(argv[0]);
 			break;
 		}
+	}
 
 	if (optind == argc)
 		usage(argv[0]);
@@ -560,6 +567,6 @@ int main(int argc, char**argv)
 			rc = rc2;
 	}
 
-	return rc;
+	return -rc;
 }
 #endif

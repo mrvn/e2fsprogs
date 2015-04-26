@@ -654,8 +654,6 @@ static int write_dir_block(ext2_filsys fs,
 		 * once.
 		 */
 		if (blk % EXT2FS_CLUSTER_RATIO(fs) == 0) {
-			ext2fs_unmark_block_bitmap2(wd->ctx->block_found_map,
-						    blk);
 			ext2fs_block_alloc_stats2(fs, blk, -1);
 			wd->cleared++;
 		}
@@ -701,7 +699,10 @@ static errcode_t write_directory(e2fsck_t ctx, ext2_filsys fs,
 		inode.i_flags &= ~EXT2_INDEX_FL;
 	else
 		inode.i_flags |= EXT2_INDEX_FL;
-	inode.i_size = outdir->num * fs->blocksize;
+	retval = ext2fs_inode_size_set(fs, &inode,
+				       outdir->num * fs->blocksize);
+	if (retval)
+		return retval;
 	ext2fs_iblk_sub_blocks(fs, &inode, wd.cleared);
 	e2fsck_write_inode(ctx, ino, &inode, "rehash_dir");
 
@@ -772,7 +773,7 @@ retry_nohash:
 
 	/* Sort the list */
 resort:
-	if (fd.compress)
+	if (fd.compress && fd.num_array > 1)
 		qsort(fd.harray+2, fd.num_array-2, sizeof(struct hash_entry),
 		      hash_cmp);
 	else
@@ -791,7 +792,7 @@ resort:
 	}
 
 	/* Sort non-hashed directories by inode number */
-	if (fd.compress)
+	if (fd.compress && fd.num_array > 1)
 		qsort(fd.harray+2, fd.num_array-2,
 		      sizeof(struct hash_entry), ino_cmp);
 

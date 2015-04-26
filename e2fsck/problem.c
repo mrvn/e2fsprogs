@@ -440,6 +440,11 @@ static struct e2fsck_problem problem_table[] = {
 	  N_("@S 64bit filesystems needs extents to access the whole disk.  "),
 	  PROMPT_FIX, PR_PREEN_OK | PR_NO_OK},
 
+	/* The first_meta_bg is too big */
+	{ PR_0_FIRST_META_BG_TOO_BIG,
+	  N_("First_meta_bg is too big.  (%N, max value %g).  "),
+	  PROMPT_CLEAR, 0 },
+
 	/* Pass 1 errors */
 
 	/* Pass 1: Checking inodes, blocks, and sizes */
@@ -966,6 +971,21 @@ static struct e2fsck_problem problem_table[] = {
 	  N_("@i %i, end of extent exceeds allowed value\n\t(logical @b %c, physical @b %b, len %N)\n"),
 	  PROMPT_CLEAR, 0 },
 
+
+	/* Directory inode block <block> should be at block <otherblock> */
+	{ PR_1_COLLAPSE_DBLOCK,
+	  N_("@d @i %i @b %b should be at @b %c.  "),
+	  PROMPT_FIX, 0 },
+
+	/* Extents/inlinedata flag set on a device or socket inode */
+	{ PR_1_UNINIT_DBLOCK,
+	  N_("@d @i %i has @x marked uninitialized at @b %c.  "),
+	  PROMPT_FIX, PR_PREEN_OK },
+
+	/* Inode logical block (physical block ) is misaligned. */
+	{ PR_1_MISALIGNED_CLUSTER,
+	  N_("@i %i logical @b %b (physical @b %c) violates cluster allocation rules.\nWill fix in pass 1B.\n"),
+	  PROMPT_NONE, 0 },
 
 	/* Pass 1b errors */
 
@@ -1716,6 +1736,21 @@ static struct e2fsck_problem problem_table[] = {
 	{ PR_6_UPDATE_QUOTAS,
 	  N_("Update quota info for quota type %N"),
 	  PROMPT_NULL, PR_PREEN_OK },
+
+	/* Error setting block group checksum info */
+	{ PR_6_SET_BG_CHECKSUM,
+	  N_("Error setting @b @g checksum info: %m\n"),
+	  PROMPT_NULL, PR_FATAL },
+
+	/* Error writing file system info */
+	{ PR_6_FLUSH_FILESYSTEM,
+	  N_("Error writing file system info: %m\n"),
+	  PROMPT_NULL, PR_FATAL },
+
+	/* Error flushing writes to storage device */
+	{ PR_6_IO_FLUSH,
+	  N_("Error flushing writes to storage device: %m\n"),
+	  PROMPT_NULL, PR_FATAL },
 
 	{ 0 }
 };

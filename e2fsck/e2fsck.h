@@ -369,6 +369,9 @@ struct e2fsck_struct {
 	profile_t	profile;
 	int blocks_per_page;
 
+	/* Reserve blocks for root and l+f re-creation */
+	blk64_t root_repair_block, lnf_repair_block;
+
 	/*
 	 * For the use of callers of the e2fsck functions; not used by
 	 * e2fsck functions themselves.
@@ -475,6 +478,7 @@ extern int e2fsck_pass1_check_symlink(ext2_filsys fs, ext2_ino_t ino,
 extern void e2fsck_clear_inode(e2fsck_t ctx, ext2_ino_t ino,
 			       struct ext2_inode *inode, int restart_flag,
 			       const char *source);
+extern void e2fsck_intercept_block_allocations(e2fsck_t ctx);
 
 /* pass2.c */
 extern int e2fsck_process_bad_inode(e2fsck_t ctx, ext2_ino_t dir,

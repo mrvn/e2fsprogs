@@ -1171,8 +1171,8 @@ static int deallocate_inode_block(ext2_filsys fs,
 	if ((*block_nr < fs->super->s_first_data_block) ||
 	    (*block_nr >= ext2fs_blocks_count(fs->super)))
 		return 0;
-	ext2fs_unmark_block_bitmap2(p->ctx->block_found_map, *block_nr);
-	ext2fs_block_alloc_stats2(fs, *block_nr, -1);
+	if ((*block_nr % EXT2FS_CLUSTER_RATIO(fs)) == 0)
+		ext2fs_block_alloc_stats2(fs, *block_nr, -1);
 	p->num++;
 	return 0;
 }
@@ -1214,8 +1214,6 @@ static void deallocate_inode(e2fsck_t ctx, ext2_ino_t ino, char* block_buf)
 			return;
 		}
 		if (count == 0) {
-			ext2fs_unmark_block_bitmap2(ctx->block_found_map,
-					ext2fs_file_acl_block(fs, &inode));
 			ext2fs_block_alloc_stats2(fs,
 				  ext2fs_file_acl_block(fs, &inode), -1);
 		}
@@ -1415,7 +1413,7 @@ static int allocate_dir_block(e2fsck_t ctx,
 			      struct problem_context *pctx)
 {
 	ext2_filsys fs = ctx->fs;
-	blk64_t			blk;
+	blk64_t			blk = 0;
 	char			*block;
 	struct ext2_inode	inode;
 
@@ -1431,11 +1429,17 @@ static int allocate_dir_block(e2fsck_t ctx,
 	/*
 	 * First, find a free block
 	 */
-	pctx->errcode = ext2fs_new_block2(fs, 0, ctx->block_found_map, &blk);
-	if (pctx->errcode) {
-		pctx->str = "ext2fs_new_block";
-		fix_problem(ctx, PR_2_ALLOC_DIRBOCK, pctx);
-		return 1;
+	e2fsck_read_inode(ctx, db->ino, &inode, "allocate_dir_block");
+	pctx->errcode = ext2fs_map_cluster_block(fs, db->ino, &inode,
+						 db->blockcnt, &blk);
+	if (pctx->errcode || blk == 0) {
+		pctx->errcode = ext2fs_new_block2(fs, 0,
+						  ctx->block_found_map, &blk);
+		if (pctx->errcode) {
+			pctx->str = "ext2fs_new_block";
+			fix_problem(ctx, PR_2_ALLOC_DIRBOCK, pctx);
+			return 1;
+		}
 	}
 	ext2fs_mark_block_bitmap2(ctx->block_found_map, blk);
 	ext2fs_mark_block_bitmap2(fs->block_map, blk);
@@ -1467,10 +1471,16 @@ static int allocate_dir_block(e2fsck_t ctx,
 	/*
 	 * Update the inode block count
 	 */
-	e2fsck_read_inode(ctx, db->ino, &inode, "allocate_dir_block");
 	ext2fs_iblk_add_blocks(fs, &inode, 1);
-	if (inode.i_size < (db->blockcnt+1) * fs->blocksize)
-		inode.i_size = (db->blockcnt+1) * fs->blocksize;
+	if (EXT2_I_SIZE(&inode) < (db->blockcnt+1) * fs->blocksize) {
+		pctx->errcode = ext2fs_inode_size_set(fs, &inode,
+					(db->blockcnt+1) * fs->blocksize);
+		if (pctx->errcode) {
+			pctx->str = "ext2fs_inode_size_set";
+			fix_problem(ctx, PR_2_ALLOC_DIRBOCK, pctx);
+			return 1;
+		}
+	}
 	e2fsck_write_inode(ctx, db->ino, &inode, "allocate_dir_block");
 
 	/*

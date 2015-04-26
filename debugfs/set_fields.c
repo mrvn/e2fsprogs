@@ -321,8 +321,11 @@ static struct field_set_info *find_field(struct field_set_info *fields,
 	 */
 	if (idx) {
 		array_idx = strtol(idx, &tmp, 0);
-		if (*tmp)
+		if (*tmp) {
+			*(--idx) = '[';
+			*delim = ']';
 			idx = 0;
+		}
 	}
 
 	/*
@@ -554,8 +557,9 @@ static errcode_t parse_bmap(struct field_set_info *info,
 	}
 
 	retval = ext2fs_bmap2(current_fs, set_ino,
-			     (struct ext2_inode *) &set_inode,
-			     NULL, BMAP_SET, array_idx, NULL, &blk);
+			      (struct ext2_inode *) &set_inode,
+			      NULL, BMAP_ALLOC | BMAP_SET, array_idx, NULL,
+			      &blk);
 	if (retval) {
 		com_err("set_inode", retval, "while setting block map");
 	}
