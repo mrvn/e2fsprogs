@@ -274,7 +274,7 @@ static void check_ea_in_inode(e2fsck_t ctx, struct problem_context *pctx)
 	struct ext2_super_block *sb = ctx->fs->super;
 	struct ext2_inode_large *inode;
 	struct ext2_ext_attr_entry *entry;
-	char *start, *end;
+	char *start;
 	unsigned int storage_size, remain;
 	int problem = 0;
 
@@ -283,7 +283,6 @@ static void check_ea_in_inode(e2fsck_t ctx, struct problem_context *pctx)
 		inode->i_extra_isize;
 	start = ((char *) inode) + EXT2_GOOD_OLD_INODE_SIZE +
 		inode->i_extra_isize + sizeof(__u32);
-	end = (char *) inode + EXT2_INODE_SIZE(ctx->fs->super);
 	entry = (struct ext2_ext_attr_entry *) start;
 
 	/* scan all entry's headers first */
@@ -1432,6 +1431,16 @@ static _INLINE_ void mark_block_used(e2fsck_t ctx, blk64_t block)
 	}
 }
 
+static _INLINE_ void mark_blocks_used(e2fsck_t ctx, blk64_t block,
+				      unsigned int num)
+{
+	if (ext2fs_test_block_bitmap_range2(ctx->block_found_map, block, num))
+		ext2fs_mark_block_bitmap_range2(ctx->block_found_map, block, num);
+	else
+		while (num--)
+			mark_block_used(ctx, block++);
+}
+
 /*
  * Adjust the extended attribute block's reference counts at the end
  * of pass 1, either by subtracting out references for EA blocks that
@@ -1787,7 +1796,7 @@ static void scan_extent_node(e2fsck_t ctx, struct problem_context *pctx,
 			problem = PR_1_EXTENT_ENDS_BEYOND;
 
 		if (problem) {
-		report_problem:
+report_problem:
 			pctx->blk = extent.e_pblk;
 			pctx->blk2 = extent.e_lblk;
 			pctx->num = extent.e_len;
@@ -1799,6 +1808,7 @@ static void scan_extent_node(e2fsck_t ctx, struct problem_context *pctx,
 					pctx->str = "ext2fs_extent_delete";
 					return;
 				}
+				ext2fs_extent_fix_parents(ehandle);
 				pctx->errcode = ext2fs_extent_get(ehandle,
 								  EXT2_EXTENT_CURRENT,
 								  &extent);
@@ -1812,7 +1822,10 @@ static void scan_extent_node(e2fsck_t ctx, struct problem_context *pctx,
 		}
 
 		if (!is_leaf) {
+			blk64_t lblk;
+
 			blk = extent.e_pblk;
+			lblk = extent.e_lblk;
 			pctx->errcode = ext2fs_extent_get(ehandle,
 						  EXT2_EXTENT_DOWN, &extent);
 			if (pctx->errcode) {
@@ -1821,6 +1834,18 @@ static void scan_extent_node(e2fsck_t ctx, struct problem_context *pctx,
 				if (pctx->errcode == EXT2_ET_EXTENT_HEADER_BAD)
 					goto report_problem;
 				return;
+			}
+			/* The next extent should match this index's logical start */
+			if (extent.e_lblk != lblk) {
+				struct ext2_extent_info info;
+
+				ext2fs_extent_get_info(ehandle, &info);
+				pctx->blk = lblk;
+				pctx->blk2 = extent.e_lblk;
+				pctx->num = info.curr_level - 1;
+				problem = PR_1_EXTENT_INDEX_START_INVALID;
+				if (fix_problem(ctx, problem, pctx))
+					ext2fs_extent_fix_parents(ehandle);
 			}
 			scan_extent_node(ctx, pctx, pb, extent.e_lblk, ehandle);
 			if (pctx->errcode)
@@ -1867,11 +1892,15 @@ static void scan_extent_node(e2fsck_t ctx, struct problem_context *pctx,
 				goto failed_add_dir_block;
 			}
 		}
+		if (!ctx->fs->cluster_ratio_bits) {
+			mark_blocks_used(ctx, extent.e_pblk, extent.e_len);
+			pb->num_blocks += extent.e_len;
+		}
 		for (blk = extent.e_pblk, blockcnt = extent.e_lblk, i = 0;
 		     i < extent.e_len;
 		     blk++, blockcnt++, i++) {
-			if (!(ctx->fs->cluster_ratio_bits &&
-			      pb->previous_block &&
+			if (ctx->fs->cluster_ratio_bits &&
+			    !(pb->previous_block &&
 			      (EXT2FS_B2C(ctx->fs, blk) ==
 			       EXT2FS_B2C(ctx->fs, pb->previous_block)) &&
 			      (blk & EXT2FS_CLUSTER_MASK(ctx->fs)) ==

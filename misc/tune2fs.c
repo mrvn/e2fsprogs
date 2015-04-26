@@ -141,8 +141,10 @@ static __u32 ok_features[3] = {
 		EXT4_FEATURE_RO_COMPAT_DIR_NLINK|
 		EXT4_FEATURE_RO_COMPAT_EXTRA_ISIZE|
 		EXT4_FEATURE_RO_COMPAT_GDT_CSUM |
-		EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER |
-		EXT4_FEATURE_RO_COMPAT_QUOTA
+#ifdef CONFIG_QUOTA
+		EXT4_FEATURE_RO_COMPAT_QUOTA |
+#endif
+		EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER
 };
 
 static __u32 clear_ok_features[3] = {
@@ -159,8 +161,10 @@ static __u32 clear_ok_features[3] = {
 		EXT4_FEATURE_RO_COMPAT_HUGE_FILE|
 		EXT4_FEATURE_RO_COMPAT_DIR_NLINK|
 		EXT4_FEATURE_RO_COMPAT_EXTRA_ISIZE|
-		EXT4_FEATURE_RO_COMPAT_GDT_CSUM |
-		EXT4_FEATURE_RO_COMPAT_QUOTA
+#ifdef CONFIG_QUOTA
+		EXT4_FEATURE_RO_COMPAT_QUOTA |
+#endif
+		EXT4_FEATURE_RO_COMPAT_GDT_CSUM
 };
 
 /*
@@ -1088,7 +1092,7 @@ static void parse_tune2fs_options(int argc, char **argv)
 		*io_options++ = 0;
 	device_name = blkid_get_devname(NULL, argv[optind], NULL);
 	if (!device_name) {
-		com_err("tune2fs", 0, _("Unable to resolve '%s'"),
+		com_err(program_name, 0, _("Unable to resolve '%s'"),
 			argv[optind]);
 		exit(1);
 	}

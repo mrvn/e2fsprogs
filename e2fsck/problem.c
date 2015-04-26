@@ -946,6 +946,14 @@ static struct e2fsck_problem problem_table[] = {
 	  N_("@i %i has zero length extent\n\t(@n logical @b %c, physical @b %b)\n"),
 	  PROMPT_CLEAR, 0 },
 
+	/*
+	 * Interior extent node logical offset doesn't match first node below it
+	 */
+	{ PR_1_EXTENT_INDEX_START_INVALID,
+	  N_("Interior @x node level %N of @i %i:\n"
+	     "Logical start %b does not match logical start %c at next level.  "),
+	  PROMPT_FIX, 0 },
+
 	/* Pass 1b errors */
 
 	/* Pass 1B: Rescan for duplicate/bad blocks */
@@ -1816,7 +1824,7 @@ int fix_problem(e2fsck_t ctx, problem_t code, struct problem_context *pctx)
 		return 0;
 	}
 	if (!(ptr->flags & PR_CONFIG)) {
-		char	key[9], *new_desc;
+		char	key[9], *new_desc = NULL;
 
 		sprintf(key, "0x%06x", code);
 

@@ -1,11 +1,49 @@
-e2fsprogs (1.42.5-1.1) unstable; urgency=low
+e2fsprogs (1.42.7~WIP-2013-01-01-1) experimental; urgency=low
 
-  * Non-maintainer upload.
-  * e2fsck-static, e2fsprogs: let preinst remove a symbolic link in
-    /usr/share/doc, that should have been replaced with a directory since
-    1.39+1.40-WIP-2006.10.02+dfsg-1. (Closes: #698879).
+  * New upstream version (pre-release for testing)
+  * Added new options to filefrag to be consistent with the version from
+    Lustre
+  * Fixed a bug in resize2fs which could cause severe file system
+    corruption when growing an ext4 file system which was formatted with
+    fewer-than-normal reserved gdt blocks
+  * Fixed resize2fs to be able to handle off-line resizes of file
+    systems with the flex_bg feature and without any reserved gdt
+    blocks or if the file system did not have the resize_inode feature
+  * Fix a crash while mke2fs is parsing "-E resize=NNN" with the 64bit
+    file system feature enabled
+  * Added the "zap_block", "block_dump", and "extent_open" commands to
+    debugfs
+  * Fixed e2fsck so it detects and fixes inconsistencies in the interior
+    nodes of an inode's extent tree
+  * Fixed mke2fs's handling of the mmp_update_interval option
+  * Optimized e2fsck's CPU utilization
+  * Fixed debugfs's htree command so that all its messages are sent
+    through the pager.
+  * Fixed debugfs's dump_file and cat functions so they work correctly
+    on file systems with a block size greater than 8k.
+  * Fixed e2freefrag so it works on 64-bit file systems, and so it uses
+    much less memory.
 
- -- Nicolas Boulenguez <nicolas@debian.org>  Fri, 22 Feb 2013 23:14:59 +0100
+ -- Theodore Y. Ts'o <tytso@mit.edu>  Tue, 1 Jan 2013 10:23:04 -0500
+
+e2fsprogs (1.42.6-1) unstable; urgency=low
+
+  * New upstream version
+  * Fix build dependencies to avoid requiring dc, and to allow
+    cross-building to work (Closes: #677497)
+  * Updated/fixed various man pages
+  * Mke2fs will now update its progress indicators at most once a second
+    to avoid overwhelming serial consoles.
+  * Resize2fs will support lazy_itable_init, speeding up off-line growth
+    of uninit_bg file systems.
+  * Resize2fs now supports on-line resizing 64-bit file systems beyond
+    16TB.  A number of bugs in resize2fs which prevented this have been
+    fixed.
+  * Resize2fs now correctly handles resizing 32-bit file systems to 16TB.
+  * Fixed a potential segfault in e2fsck when there is an I/O error
+    while reading the superblock.
+
+ -- Theodore Y. Ts'o <tytso@mit.edu>  Fri, 21 Sep 2012 12:14:41 -0400
 
 e2fsprogs (1.42.5-1) unstable; urgency=low
 

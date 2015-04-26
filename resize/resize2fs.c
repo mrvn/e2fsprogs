@@ -62,9 +62,7 @@ static errcode_t fix_sb_journal_backup(ext2_filsys fs);
 				 ((blk) < (ext2fs_inode_table_loc((fs), (i)) + \
 					   (fs)->inode_blocks_per_group)))
 
-#define META_OVERHEAD(fs) (2 + (fs)->inode_blocks_per_group)
-#define SUPER_OVERHEAD(fs) (1 + (fs)->desc_blocks +\
-			    (fs)->super->s_reserved_gdt_blocks)
+int lazy_itable_init;
 
 /*
  * This is the top-level routine which does the dirty deed....
@@ -296,8 +294,8 @@ errcode_t adjust_fs_info(ext2_filsys fs, ext2_filsys old_fs,
 	blk64_t		rem;
 	blk64_t		blk, group_block;
 	blk64_t		real_end;
-	blk64_t		adj, old_numblocks, numblocks, adjblocks;
-	unsigned long	i, j, old_desc_blocks, max_group;
+	blk64_t		old_numblocks, numblocks, adjblocks;
+	unsigned long	i, j, old_desc_blocks;
 	unsigned int	meta_bg, meta_bg_size;
 	int		has_super, csum_flag;
 	unsigned long long new_inodes;	/* u64 to check for overflow */
@@ -484,8 +482,8 @@ retry:
 
 	csum_flag = EXT2_HAS_RO_COMPAT_FEATURE(fs->super,
 					       EXT4_FEATURE_RO_COMPAT_GDT_CSUM);
-	adj = old_fs->group_desc_count;
-	max_group = fs->group_desc_count - adj;
+	if (access("/sys/fs/ext4/features/lazy_itable_init", F_OK) == 0)
+		lazy_itable_init = 1;
 	if (fs->super->s_feature_incompat & EXT2_FEATURE_INCOMPAT_META_BG)
 		old_desc_blocks = fs->super->s_first_meta_bg;
 	else
@@ -498,8 +496,14 @@ retry:
 		adjblocks = 0;
 
 		ext2fs_bg_flags_zap(fs, i);
-		if (csum_flag)
-			ext2fs_bg_flags_set(fs, i, EXT2_BG_INODE_UNINIT | EXT2_BG_INODE_ZEROED);
+		if (csum_flag) {
+			ext2fs_bg_flags_set(fs, i, EXT2_BG_INODE_UNINIT);
+			if (!lazy_itable_init)
+				ext2fs_bg_flags_set(fs, i,
+						    EXT2_BG_INODE_ZEROED);
+			ext2fs_bg_itable_unused_set(fs, i,
+					fs->super->s_inodes_per_group);
+		}
 
 		numblocks = ext2fs_group_blocks_count(fs, i);
 		if ((i < fs->group_desc_count - 1) && csum_flag)
@@ -612,7 +616,19 @@ static errcode_t adjust_superblock(ext2_resize_t rfs, blk64_t new_size)
 	}
 
 	/*
-	 * Initialize the new block group descriptors
+	 * If we are using uninit_bg (aka GDT_CSUM) and the kernel
+	 * supports lazy inode initialization, we can skip
+	 * initializing the inode table.
+	 */
+	if (lazy_itable_init &&
+	    EXT2_HAS_RO_COMPAT_FEATURE(fs->super,
+				       EXT4_FEATURE_RO_COMPAT_GDT_CSUM)) {
+		retval = 0;
+		goto errout;
+	}
+
+	/*
+	 * Initialize the inode table
 	 */
 	retval = ext2fs_get_array(fs->blocksize, fs->inode_blocks_per_group,
 				&rfs->itable_buf);
@@ -680,15 +696,7 @@ static errcode_t mark_table_blocks(ext2_filsys fs,
 	blk64_t			b;
 	unsigned int		j;
 	dgrp_t			i;
-	unsigned long		meta_bg_size;
-	unsigned int		old_desc_blocks;
 
-	meta_bg_size = EXT2_DESC_PER_BLOCK(fs->super);
-	if (fs->super->s_feature_incompat & EXT2_FEATURE_INCOMPAT_META_BG)
-		old_desc_blocks = fs->super->s_first_meta_bg;
-	else
-		old_desc_blocks = fs->desc_blocks +
-			fs->super->s_reserved_gdt_blocks;
 	for (i = 0; i < fs->group_desc_count; i++) {
 		ext2fs_reserve_super_and_bgd(fs, i, bmap);
 
@@ -737,14 +745,41 @@ static void mark_fs_metablock(ext2_resize_t rfs,
 	if (IS_BLOCK_BM(fs, group, blk)) {
 		ext2fs_block_bitmap_loc_set(fs, group, 0);
 		rfs->needed_blocks++;
-	} else if (IS_INODE_BM(fs, group, blk)) {
+		return;
+	}
+	if (IS_INODE_BM(fs, group, blk)) {
 		ext2fs_inode_bitmap_loc_set(fs, group, 0);
 		rfs->needed_blocks++;
-	} else if (IS_INODE_TB(fs, group, blk)) {
+		return;
+	}
+	if (IS_INODE_TB(fs, group, blk)) {
 		ext2fs_inode_table_loc_set(fs, group, 0);
 		rfs->needed_blocks++;
-	} else if (EXT2_HAS_RO_COMPAT_FEATURE(fs->super,
-					      EXT4_FEATURE_RO_COMPAT_GDT_CSUM) &&
+		return;
+	}
+	if (fs->super->s_feature_incompat & EXT4_FEATURE_INCOMPAT_FLEX_BG) {
+		dgrp_t i;
+
+		for (i=0; i < rfs->old_fs->group_desc_count; i++) {
+			if (IS_BLOCK_BM(fs, i, blk)) {
+				ext2fs_block_bitmap_loc_set(fs, i, 0);
+				rfs->needed_blocks++;
+				return;
+			}
+			if (IS_INODE_BM(fs, i, blk)) {
+				ext2fs_inode_bitmap_loc_set(fs, i, 0);
+				rfs->needed_blocks++;
+				return;
+			}
+			if (IS_INODE_TB(fs, i, blk)) {
+				ext2fs_inode_table_loc_set(fs, i, 0);
+				rfs->needed_blocks++;
+				return;
+			}
+		}
+	}
+	if (EXT2_HAS_RO_COMPAT_FEATURE(fs->super,
+				       EXT4_FEATURE_RO_COMPAT_GDT_CSUM) &&
 		   (ext2fs_bg_flags_test(fs, group, EXT2_BG_BLOCK_UNINIT))) {
 		/*
 		 * If the block bitmap is uninitialized, which means
@@ -774,7 +809,7 @@ static errcode_t blocks_to_move(ext2_resize_t rfs)
 	errcode_t	retval;
 	ext2_filsys 	fs, old_fs;
 	ext2fs_block_bitmap	meta_bmap;
-	__u32		save_incompat_flag;
+	int		flex_bg;
 
 	fs = rfs->new_fs;
 	old_fs = rfs->old_fs;
@@ -866,6 +901,9 @@ static errcode_t blocks_to_move(ext2_resize_t rfs)
 	 * gets interesting....
 	 */
 	meta_bg_size = EXT2_DESC_PER_BLOCK(fs->super);
+	flex_bg = fs->super->s_feature_incompat &
+		EXT4_FEATURE_INCOMPAT_FLEX_BG;
+	/* first reserve all of the existing fs meta blocks */
 	for (i = 0; i < max_groups; i++) {
 		has_super = ext2fs_bg_has_super(fs, i);
 		if (has_super)
@@ -891,52 +929,53 @@ static errcode_t blocks_to_move(ext2_resize_t rfs)
 						  group_blk + has_super);
 		}
 
-		if (ext2fs_inode_table_loc(fs, i) &&
-		    ext2fs_inode_bitmap_loc(fs, i) &&
-		    ext2fs_block_bitmap_loc(fs, i))
-			goto next_group;
-
 		/*
 		 * Reserve the existing meta blocks that we know
 		 * aren't to be moved.
+		 *
+		 * For flex_bg file systems, in order to avoid
+		 * overwriting fs metadata (especially inode table
+		 * blocks) belonging to a different block group when
+		 * we are relocating the inode tables, we need to
+		 * reserve all existing fs metadata blocks.
 		 */
 		if (ext2fs_block_bitmap_loc(fs, i))
 			ext2fs_mark_block_bitmap2(rfs->reserve_blocks,
 				 ext2fs_block_bitmap_loc(fs, i));
+		else if (flex_bg && i < old_fs->group_desc_count)
+			ext2fs_mark_block_bitmap2(rfs->reserve_blocks,
+				 ext2fs_block_bitmap_loc(old_fs, i));
+
 		if (ext2fs_inode_bitmap_loc(fs, i))
 			ext2fs_mark_block_bitmap2(rfs->reserve_blocks,
 				 ext2fs_inode_bitmap_loc(fs, i));
+		else if (flex_bg && i < old_fs->group_desc_count)
+			ext2fs_mark_block_bitmap2(rfs->reserve_blocks,
+				 ext2fs_inode_bitmap_loc(old_fs, i));
+
 		if (ext2fs_inode_table_loc(fs, i))
 			for (blk = ext2fs_inode_table_loc(fs, i), j=0;
 			     j < fs->inode_blocks_per_group ; j++, blk++)
 				ext2fs_mark_block_bitmap2(rfs->reserve_blocks,
 							 blk);
+		else if (flex_bg && i < old_fs->group_desc_count)
+			for (blk = ext2fs_inode_table_loc(old_fs, i), j=0;
+			     j < old_fs->inode_blocks_per_group ; j++, blk++)
+				ext2fs_mark_block_bitmap2(rfs->reserve_blocks,
+							  blk);
 
-		/*
-		 * Allocate the missing data structures
-		 *
-		 * XXX We have a problem with FLEX_BG and off-line
-		 * resizing where we are growing the size of the
-		 * filesystem.  ext2fs_allocate_group_table() will try
-		 * to reserve the inode table in the desired flex_bg
-		 * location.  However, passing rfs->reserve_blocks
-		 * doesn't work since it only has reserved the blocks
-		 * that will be used in the new block group -- and
-		 * with flex_bg, we can and will allocate the tables
-		 * outside of the block group.  And we can't pass in
-		 * the fs->block_map because it doesn't handle
-		 * overlapping inode table movements right.  So for
-		 * now, we temporarily disable flex_bg to force
-		 * ext2fs_allocate_group_tables() to allocate the bg
-		 * metadata in side the block group, and the restore
-		 * it afterwards.  Ugly, until we can fix this up
-		 * right later.
-		 */
-		save_incompat_flag = fs->super->s_feature_incompat;
-		fs->super->s_feature_incompat &= ~EXT4_FEATURE_INCOMPAT_FLEX_BG;
+		group_blk += rfs->new_fs->super->s_blocks_per_group;
+	}
+
+	/* Allocate the missing data structures */
+	for (i = 0; i < max_groups; i++) {
+		if (ext2fs_inode_table_loc(fs, i) &&
+		    ext2fs_inode_bitmap_loc(fs, i) &&
+		    ext2fs_block_bitmap_loc(fs, i))
+			continue;
+
 		retval = ext2fs_allocate_group_table(fs, i,
 						     rfs->reserve_blocks);
-		fs->super->s_feature_incompat = save_incompat_flag;
 		if (retval)
 			goto errout;
 
@@ -969,7 +1008,7 @@ static errcode_t blocks_to_move(ext2_resize_t rfs)
 		 * block relocation phase.
 		 */
 		if (ext2fs_inode_table_loc(fs, i) == ext2fs_inode_table_loc(old_fs, i))
-			goto next_group; /* inode table not moved */
+			continue;	/* inode table not moved */
 
 		rfs->needed_blocks += fs->inode_blocks_per_group;
 
@@ -994,9 +1033,6 @@ static errcode_t blocks_to_move(ext2_resize_t rfs)
 		for (blk = ext2fs_inode_table_loc(rfs->old_fs, i), j=0;
 		     j < fs->inode_blocks_per_group ; j++, blk++)
 			ext2fs_mark_block_bitmap2(rfs->reserve_blocks, blk);
-
-	next_group:
-		group_blk += rfs->new_fs->super->s_blocks_per_group;
 	}
 	retval = 0;
 
@@ -1708,7 +1744,7 @@ static errcode_t fix_resize_inode(ext2_filsys fs)
 {
 	struct ext2_inode	inode;
 	errcode_t		retval;
-	char *			block_buf;
+	char			*block_buf = NULL;
 
 	if (!(fs->super->s_feature_compat &
 	      EXT2_FEATURE_COMPAT_RESIZE_INODE))
@@ -1880,6 +1916,27 @@ static errcode_t fix_sb_journal_backup(ext2_filsys fs)
 	return 0;
 }
 
+static int calc_group_overhead(ext2_filsys fs, blk64_t grp,
+			       int old_desc_blocks)
+{
+	blk64_t	super_blk, old_desc_blk, new_desc_blk;
+	int overhead;
+
+	/* inode table blocks plus allocation bitmaps */
+	overhead = fs->inode_blocks_per_group + 2;
+
+	ext2fs_super_and_bgd_loc2(fs, grp, &super_blk,
+				  &old_desc_blk, &new_desc_blk, 0);
+	if ((grp == 0) || super_blk)
+		overhead++;
+	if (old_desc_blk)
+		overhead += old_desc_blocks;
+	else if (new_desc_blk)
+		overhead++;
+	return overhead;
+}
+
+
 /*
  * calcluate the minimum number of blocks the given fs can be resized to
  */
@@ -1889,7 +1946,7 @@ blk64_t calculate_minimum_resize_size(ext2_filsys fs)
 	blk64_t blks_needed, groups, data_blocks;
 	blk64_t grp, data_needed, last_start;
 	blk64_t overhead = 0;
-	int num_of_superblocks = 0;
+	int old_desc_blocks;
 	int extra_groups = 0;
 	int flexbg_size = 1 << fs->super->s_log_groups_per_flex;
 
@@ -1906,28 +1963,29 @@ blk64_t calculate_minimum_resize_size(ext2_filsys fs)
 				   EXT2_BLOCKS_PER_GROUP(fs->super));
 
 	/*
-	 * we need to figure out how many backup superblocks we have so we can
-	 * account for that in the metadata
+	 * number of old-style block group descriptor blocks
 	 */
-	for (grp = 0; grp < fs->group_desc_count; grp++) {
-		if (ext2fs_bg_has_super(fs, grp))
-			num_of_superblocks++;
-	}
+	if (fs->super->s_feature_incompat & EXT2_FEATURE_INCOMPAT_META_BG)
+		old_desc_blocks = fs->super->s_first_meta_bg;
+	else
+		old_desc_blocks = fs->desc_blocks +
+			fs->super->s_reserved_gdt_blocks;
 
 	/* calculate how many blocks are needed for data */
 	data_needed = ext2fs_blocks_count(fs->super) -
 		ext2fs_free_blocks_count(fs->super);
-	data_needed -= SUPER_OVERHEAD(fs) * num_of_superblocks;
-	data_needed -= META_OVERHEAD(fs) * fs->group_desc_count;
 
+	for (grp = 0; grp < fs->group_desc_count; grp++)
+		data_needed -= calc_group_overhead(fs, grp, old_desc_blocks);
+
+	/*
+	 * For ext4 we need to allow for up to a flex_bg worth of
+	 * inode tables of slack space so the resize operation can be
+	 * guaranteed to finish.
+	 */
 	if (fs->super->s_feature_incompat & EXT4_FEATURE_INCOMPAT_FLEX_BG) {
-		/*
-		 * For ext4 we need to allow for up to a flex_bg worth
-		 * of inode tables of slack space so the resize
-		 * operation can be guaranteed to finish.
-		 */
 		extra_groups = flexbg_size - (groups & (flexbg_size - 1));
-		data_needed += META_OVERHEAD(fs) * extra_groups;
+		data_needed += fs->inode_blocks_per_group * extra_groups;
 		extra_groups = groups % flexbg_size;
 	}
 
@@ -1938,10 +1996,7 @@ blk64_t calculate_minimum_resize_size(ext2_filsys fs)
 	data_blocks = groups * EXT2_BLOCKS_PER_GROUP(fs->super);
 	last_start = 0;
 	for (grp = 0; grp < groups; grp++) {
-		overhead = META_OVERHEAD(fs);
-
-		if (ext2fs_bg_has_super(fs, grp))
-			overhead += SUPER_OVERHEAD(fs);
+		overhead = calc_group_overhead(fs, grp, old_desc_blocks);
 
 		/*
 		 * we want to keep track of how much data we can store in
@@ -1970,15 +2025,12 @@ blk64_t calculate_minimum_resize_size(ext2_filsys fs)
 		data_blocks += extra_grps * EXT2_BLOCKS_PER_GROUP(fs->super);
 
 		/* ok we have to account for the last group */
-		overhead = META_OVERHEAD(fs);
-		if (ext2fs_bg_has_super(fs, groups-1))
-			overhead += SUPER_OVERHEAD(fs);
+		overhead = calc_group_overhead(fs, groups-1, old_desc_blocks);
 		last_start += EXT2_BLOCKS_PER_GROUP(fs->super) - overhead;
 
 		for (grp = groups; grp < groups+extra_grps; grp++) {
-			overhead = META_OVERHEAD(fs);
-			if (ext2fs_bg_has_super(fs, grp))
-				overhead += SUPER_OVERHEAD(fs);
+			overhead = calc_group_overhead(fs, grp,
+						       old_desc_blocks);
 
 			/*
 			 * again, we need to see how much data we cram into
@@ -2003,13 +2055,14 @@ blk64_t calculate_minimum_resize_size(ext2_filsys fs)
 			 */
 			extra_groups = flexbg_size -
 						(groups & (flexbg_size - 1));
-			data_needed += META_OVERHEAD(fs) * extra_groups;
+			data_needed += (fs->inode_blocks_per_group *
+					extra_groups);
 			extra_groups = groups % flexbg_size;
 		}
 	}
 
 	/* now for the fun voodoo */
-	overhead = META_OVERHEAD(fs);
+	overhead = calc_group_overhead(fs, groups-1, old_desc_blocks);
 
 	/*
 	 * if this is the case then the last group is going to have data in it
@@ -2031,8 +2084,6 @@ blk64_t calculate_minimum_resize_size(ext2_filsys fs)
 	} else
 		overhead += 50;
 
-	if (ext2fs_bg_has_super(fs, groups-1))
-		overhead += SUPER_OVERHEAD(fs);
 	overhead += fs->super->s_first_data_block;
 
 	/*
