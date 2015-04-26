@@ -248,7 +248,10 @@ option is useful when removing the
 filesystem feature from a filesystem which has 
 an external journal (or is corrupted
 such that it appears to have an external journal), but that 
-external journal is not available.   
+external journal is not available.   If the filesystem appears to require
+journal replay, the
+.B \-f
+flag must be specified twice to proceed.
 .sp
 .B WARNING:
 Removing an external journal from a filesystem which was not cleanly unmounted
@@ -333,6 +336,13 @@ megabytes.   The size of the journal must be at least 1024 filesystem blocks
 and may be no more than 102,400 filesystem blocks.
 There must be enough free space in the filesystem to create a journal of
 that size.
+.TP
+.BI location =journal-location
+Specify the location of the journal.  The argument
+.I journal-location
+can either be specified as a block number, or if the number has a units
+suffix (e.g., 'M', 'G', etc.) interpret it as the offset from the
+beginning of the file system.
 @JDEV@.TP
 @JDEV@.BI device= external-journal
 @JDEV@Attach the filesystem to the journal block device located on

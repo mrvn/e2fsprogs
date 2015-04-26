@@ -56,6 +56,7 @@ const char *debug_prog_name;
 int sci_idx;
 
 ext2_filsys	current_fs = NULL;
+quota_ctx_t	current_qctx;
 ext2_ino_t	root, cwd;
 
 static void open_filesystem(char *device, int open_flags, blk64_t superblock,
@@ -181,7 +182,8 @@ void do_open_filesys(int argc, char **argv)
 				return;
 			break;
 		case 's':
-			err = strtoblk(argv[0], optarg, &superblock);
+			err = strtoblk(argv[0], optarg,
+				       "superblock block number", &superblock);
 			if (err)
 				return;
 			break;
@@ -237,6 +239,8 @@ static void close_filesystem(NOARGS)
 		if (retval)
 			com_err("ext2fs_write_block_bitmap", retval, 0);
 	}
+	if (current_qctx)
+		quota_release_context(&current_qctx);
 	retval = ext2fs_close(current_fs);
 	if (retval)
 		com_err("ext2fs_close", retval, 0);
@@ -284,12 +288,10 @@ void do_init_filesys(int argc, char **argv)
 		return;
 
 	memset(&param, 0, sizeof(struct ext2_super_block));
-	err = strtoblk(argv[0], argv[2], &blocks);
+	err = strtoblk(argv[0], argv[2], "blocks count", &blocks);
 	if (err)
 		return;
 	ext2fs_blocks_count_set(&param, blocks);
-	if (err)
-		return;
 	retval = ext2fs_initialize(argv[1], 0, &param,
 				   unix_io_manager, &current_fs);
 	if (retval) {
@@ -2100,7 +2102,7 @@ void do_bmap(int argc, char *argv[])
 	ino = string_to_inode(argv[1]);
 	if (!ino)
 		return;
-	err = strtoblk(argv[0], argv[2], &blk);
+	err = strtoblk(argv[0], argv[2], "logical block", &blk);
 	if (err)
 		return;
 
@@ -2247,11 +2249,11 @@ void do_punch(int argc, char *argv[])
 	ino = string_to_inode(argv[1]);
 	if (!ino)
 		return;
-	err = strtoblk(argv[0], argv[2], &start);
+	err = strtoblk(argv[0], argv[2], "logical block", &start);
 	if (err)
 		return;
 	if (argc == 4) {
-		err = strtoblk(argv[0], argv[3], &end);
+		err = strtoblk(argv[0], argv[3], "logical block", &end);
 		if (err)
 			return;
 	} else
@@ -2457,7 +2459,9 @@ int main(int argc, char **argv)
 						"block size", 0);
 			break;
 		case 's':
-			retval = strtoblk(argv[0], optarg, &superblock);
+			retval = strtoblk(argv[0], optarg,
+					  "superblock block number",
+					  &superblock);
 			if (retval)
 				return 1;
 			break;

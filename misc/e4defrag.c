@@ -34,13 +34,11 @@
 #include <unistd.h>
 #include <ext2fs/ext2_types.h>
 #include <ext2fs/ext2fs.h>
-#include <linux/fs.h>
 #include <sys/ioctl.h>
 #include <ext2fs/fiemap.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
-#include <sys/syscall.h>
 #include <sys/vfs.h>
 
 /* A relatively new ioctl interface ... */
@@ -183,76 +181,25 @@ static ext4_fsblk_t	files_block_count;
 static struct frag_statistic_ino	frag_rank[SHOW_FRAG_FILES];
 
 
-/* Local definitions of some syscalls glibc may not yet have */
-
-#ifndef HAVE_POSIX_FADVISE
-#warning Using locally defined posix_fadvise interface.
-
-#ifndef __NR_fadvise64_64
-#error Your kernel headers dont define __NR_fadvise64_64
-#endif
-
 /*
- * fadvise() -		Give advice about file access.
- *
- * @fd:			defrag target file's descriptor.
- * @offset:		file offset.
- * @len:		area length.
- * @advise:		process flag.
+ * We prefer posix_fadvise64 when available, as it allows 64bit offset on
+ * 32bit systems
  */
-static int posix_fadvise(int fd, loff_t offset, size_t len, int advise)
-{
-	return syscall(__NR_fadvise64_64, fd, offset, len, advise);
-}
-#endif /* ! HAVE_FADVISE64_64 */
+#if defined(HAVE_POSIX_FADVISE64)
+#define posix_fadvise	posix_fadvise64
+#elif defined(HAVE_FADVISE64)
+#define posix_fadvise	fadvise64
+#elif !defined(HAVE_POSIX_FADVISE)
+#error posix_fadvise not available!
+#endif
 
 #ifndef HAVE_SYNC_FILE_RANGE
-#warning Using locally defined sync_file_range interface.
-
-#ifndef __NR_sync_file_range
-#ifndef __NR_sync_file_range2 /* ppc */
-#error Your kernel headers dont define __NR_sync_file_range
-#endif
-#endif
-
-/*
- * sync_file_range() -	Sync file region.
- *
- * @fd:			defrag target file's descriptor.
- * @offset:		file offset.
- * @length:		area length.
- * @flag:		process flag.
- */
-int sync_file_range(int fd, loff_t offset, loff_t length, unsigned int flag)
-{
-#ifdef __NR_sync_file_range
-	return syscall(__NR_sync_file_range, fd, offset, length, flag);
-#else
-	return syscall(__NR_sync_file_range2, fd, flag, offset, length);
-#endif
-}
+#error sync_file_range not available!
 #endif /* ! HAVE_SYNC_FILE_RANGE */
 
 #ifndef HAVE_FALLOCATE64
-#warning Using locally defined fallocate syscall interface.
-
-#ifndef __NR_fallocate
-#error Your kernel headers dont define __NR_fallocate
-#endif
-
-/*
- * fallocate64() -	Manipulate file space.
- *
- * @fd:			defrag target file's descriptor.
- * @mode:		process flag.
- * @offset:		file offset.
- * @len:		file size.
- */
-static int fallocate64(int fd, int mode, loff_t offset, loff_t len)
-{
-	return syscall(__NR_fallocate, fd, mode, offset, len);
-}
-#endif /* ! HAVE_FALLOCATE */
+#error fallocate64 not available!
+#endif /* ! HAVE_FALLOCATE64 */
 
 /*
  * get_mount_point() -	Get device's mount point.
@@ -1847,13 +1794,13 @@ int main(int argc, char *argv[])
 
 		if (current_uid == ROOT_UID) {
 			/* Get super block info */
-			ret = ext2fs_open(dev_name, 0, 0, block_size,
-					unix_io_manager, &fs);
+			ret = ext2fs_open(dev_name, EXT2_FLAG_64BITS, 0,
+					  block_size, unix_io_manager, &fs);
 			if (ret) {
-				if (mode_flag & DETAIL) {
-					perror("Can't get super block info");
-					PRINT_FILE_NAME(argv[i]);
-				}
+				if (mode_flag & DETAIL)
+					com_err(argv[1], ret,
+						"while trying to open file system: %s",
+						dev_name);
 				continue;
 			}
 

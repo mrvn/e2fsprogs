@@ -201,7 +201,7 @@ char *time_to_string(__u32 cl)
 		tz = ss_safe_getenv("TZ");
 		if (!tz)
 			tz = "";
-		do_gmt = !strcmp(tz, "GMT");
+		do_gmt = !strcmp(tz, "GMT") | !strcmp(tz, "GMT0");
 	}
 
 	return asctime((do_gmt) ? gmtime(&t) : localtime(&t));
@@ -222,14 +222,18 @@ time_t string_to_time(const char *arg)
 	}
 	if (arg[0] == '@') {
 		/* interpret it as an integer */
-		ret = strtoul(arg+1, &tmp, 0);
+		arg++;
+	fallback:
+		ret = strtoul(arg, &tmp, 0);
 		if (*tmp)
 			return ((time_t) -1);
 		return ret;
 	}
 	memset(&ts, 0, sizeof(ts));
 #ifdef HAVE_STRPTIME
-	strptime(arg, "%Y%m%d%H%M%S", &ts);
+	tmp = strptime(arg, "%Y%m%d%H%M%S", &ts);
+	if (tmp == NULL)
+		goto fallback;
 #else
 	sscanf(arg, "%4d%2d%2d%2d%2d%2d", &ts.tm_year, &ts.tm_mon,
 	       &ts.tm_mday, &ts.tm_hour, &ts.tm_min, &ts.tm_sec);
@@ -241,13 +245,9 @@ time_t string_to_time(const char *arg)
 		ts.tm_mday = 0;
 #endif
 	ts.tm_isdst = -1;
-	ret = mktime(&ts);
-	if (ts.tm_mday == 0 || ret == ((time_t) -1)) {
-		/* Try it as an integer... */
-		ret = strtoul(arg, &tmp, 0);
-		if (*tmp)
-			return ((time_t) -1);
-	}
+	ret = ts.tm_sec + ts.tm_min*60 + ts.tm_hour*3600 + ts.tm_yday*86400 +
+		(ts.tm_year-70)*31536000 + ((ts.tm_year-69)/4)*86400 -
+		((ts.tm_year-1)/100)*86400 + ((ts.tm_year+299)/400)*86400;
 	return ret;
 }
 
@@ -301,17 +301,20 @@ unsigned long long parse_ulonglong(const char *str, const char *cmd,
 
 /*
  * This function will convert a string to a block number.  It returns
- * 0 on success, 1 on failure.
+ * 0 on success, 1 on failure.  On failure, it outputs either an optionally
+ * specified error message or a default.
  */
-int strtoblk(const char *cmd, const char *str, blk64_t *ret)
+int strtoblk(const char *cmd, const char *str, const char *errmsg,
+	     blk64_t *ret)
 {
 	blk64_t	blk;
 	int	err;
 
-	blk = parse_ulonglong(str, cmd, "block number", &err);
+	if (errmsg == NULL)
+		blk = parse_ulonglong(str, cmd, "block number", &err);
+	else
+		blk = parse_ulonglong(str, cmd, errmsg, &err);
 	*ret = blk;
-	if (err)
-		com_err(cmd, 0, "Invalid block number: %s", str);
 	return err;
 }
 
@@ -369,7 +372,7 @@ int common_block_args_process(int argc, char *argv[],
 				"<block> [count]", CHECK_FS_BITMAPS))
 		return 1;
 
-	if (strtoblk(argv[0], argv[1], block))
+	if (strtoblk(argv[0], argv[1], NULL, block))
 		return 1;
 	if (*block == 0) {
 		com_err(argv[0], 0, "Invalid block number 0");
@@ -377,7 +380,7 @@ int common_block_args_process(int argc, char *argv[],
 	}
 
 	if (argc > 2) {
-		err = strtoblk(argv[0], argv[2], count);
+		err = strtoblk(argv[0], argv[2], "count", count);
 		if (err)
 			return 1;
 	}

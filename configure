@@ -836,6 +836,7 @@ enable_htree
 enable_elf_shlibs
 enable_bsd_shlibs
 enable_profile
+enable_gcov
 enable_checker
 enable_jbd_debug
 enable_blkid_debug
@@ -1492,6 +1493,7 @@ Optional Features:
   --enable-elf-shlibs	  select ELF shared libraries
   --enable-bsd-shlibs	  select BSD shared libraries
   --enable-profile	  build profiling libraries
+  --enable-gcov	  	  build for coverage testing using gcov
   --enable-checker	  build checker libraries
   --enable-jbd-debug  	  enable journal debugging
   --enable-blkid-debug    enable blkid debugging
@@ -2753,6 +2755,21 @@ $as_echo "Release date is ${E2FSPROGS_MONTH}, ${E2FSPROGS_YEAR}" >&6; }
 
 
 
+WITH_DIET_LIBC=
+
+# Check whether --with-diet-libc was given.
+if test "${with_diet_libc+set}" = set; then :
+  withval=$with_diet_libc; CC="diet cc -nostdinc"
+WITH_DIET_LIBC=yes
+if test -z "$LIBS"
+then
+	LIBS="-lcompat"
+else
+	LIBS="$LIBS -lcompat"
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: CC=$CC" >&5
+$as_echo "CC=$CC" >&6; }
+fi
 # Make sure we can run config.sub.
 $SHELL "$ac_aux_dir/config.sub" sun4 >/dev/null 2>&1 ||
   as_fn_error $? "cannot run $SHELL $ac_aux_dir/config.sub" "$LINENO" 5
@@ -3659,15 +3676,6 @@ $as_echo "#define HAVE_DLOPEN 1" >>confdefs.h
 fi
 
 
-WITH_DIET_LIBC=
-
-# Check whether --with-diet-libc was given.
-if test "${with_diet_libc+set}" = set; then :
-  withval=$with_diet_libc; CC="diet cc -nostdinc"
-WITH_DIET_LIBC=yes
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: CC=$CC" >&5
-$as_echo "CC=$CC" >&6; }
-fi
 
 # Check whether --with-cc was given.
 if test "${with_cc+set}" = set; then :
@@ -4671,6 +4679,18 @@ fi
 
 
 
+# Check whether --enable-gcov was given.
+if test "${enable_gcov+set}" = set; then :
+  enableval=$enable_gcov; if test "$enableval" = "yes"
+then
+	CFLAGS="-g -fprofile-arcs -ftest-coverage"
+	LDFLAGS="-fprofile-arcs -ftest-coverage"
+	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: Enabling gcov support" >&5
+$as_echo "Enabling gcov support" >&6; }
+fi
+
+fi
+
 # Check whether --enable-checker was given.
 if test "${enable_checker+set}" = set; then :
   enableval=$enable_checker; if test "$enableval" = "no"
@@ -5440,9 +5460,16 @@ $as_echo "Enabling e4defrag support" >&6; }
 fi
 
 else
-  { $as_echo "$as_me:${as_lineno-$LINENO}: result: Enabling e4defrag support by default" >&5
+  if test -z "$WITH_DIET_LIBC"
+then
+	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: Enabling e4defrag support by default" >&5
 $as_echo "Enabling e4defrag support by default" >&6; }
-DEFRAG_CMT=
+	DEFRAG_CMT=
+else
+	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: Disabling e4defrag support by default" >&5
+$as_echo "Disabling e4defrag support by default" >&6; }
+	DEFRAG_CMT="#"
+fi
 
 fi
 
@@ -10448,6 +10475,16 @@ $as_echo "#define HAVE_RECLEN_DIRENT 1" >>confdefs.h
 
 fi
 
+ac_fn_c_check_member "$LINENO" "struct stat" "st_atim" "ac_cv_member_struct_stat_st_atim" "$ac_includes_default"
+if test "x$ac_cv_member_struct_stat_st_atim" = xyes; then :
+
+cat >>confdefs.h <<_ACEOF
+#define HAVE_STRUCT_STAT_ST_ATIM 1
+_ACEOF
+
+
+fi
+
 ac_fn_c_check_type "$LINENO" "ssize_t" "ac_cv_type_ssize_t" "#include <sys/types.h>
 "
 if test "x$ac_cv_type_ssize_t" = xyes; then :
@@ -10873,7 +10910,11 @@ $as_echo "#define AC_APPLE_UNIVERSAL_BUILD 1" >>confdefs.h
  presetting ac_cv_c_bigendian=no (or yes) will help" "$LINENO" 5 ;;
  esac
 
-BUILD_CC="$BUILD_CC" CPP="$CPP" /bin/sh $ac_aux_dir/parse-types.sh
+if test $cross_compiling = no; then
+  BUILD_CC="$BUILD_CC" CPP="$CPP" /bin/sh $ac_aux_dir/parse-types.sh
+else
+  CROSS_COMPILE="1" BUILD_CC="$BUILD_CC" CPP="$CPP" /bin/sh $ac_aux_dir/parse-types.sh
+fi
 ASM_TYPES_HEADER=./asm_types.h
 
 echo "/* These defines are needed for the public ext2fs.h header file */" \
@@ -11041,7 +11082,7 @@ if test "$ac_res" != no; then :
 fi
 
 fi
-for ac_func in  	__secure_getenv 	backtrace 	blkid_probe_get_topology 	chflags 	fallocate 	fallocate64 	fchown 	fdatasync 	fstat64 	ftruncate64 	getdtablesize 	getmntinfo 	getpwuid_r 	getrlimit 	getrusage 	jrand48 	llseek 	lseek64 	mallinfo 	mbstowcs 	memalign 	mmap 	msync 	nanosleep 	open64 	pathconf 	posix_fadvise 	posix_memalign 	prctl 	secure_getenv 	setmntent 	setresgid 	setresuid 	srandom 	strcasecmp 	strdup 	strnlen 	strptime 	strtoull 	sync_file_range 	sysconf 	usleep 	utime 	valloc
+for ac_func in  	__secure_getenv 	backtrace 	blkid_probe_get_topology 	blkid_probe_enable_partitions 	chflags 	fadvise64 	fallocate 	fallocate64 	fchown 	fdatasync 	fstat64 	ftruncate64 	futimes 	getcwd 	getdtablesize 	getmntinfo 	getpwuid_r 	getrlimit 	getrusage 	jrand48 	llseek 	lseek64 	mallinfo 	mbstowcs 	memalign 	mempcpy 	mmap 	msync 	nanosleep 	open64 	pathconf 	posix_fadvise 	posix_fadvise64 	posix_memalign 	prctl 	secure_getenv 	setmntent 	setresgid 	setresuid 	srandom 	stpcpy 	strcasecmp 	strdup 	strnlen 	strptime 	strtoull 	sync_file_range 	sysconf 	usleep 	utime 	valloc
 do :
   as_ac_var=`$as_echo "ac_cv_func_$ac_func" | $as_tr_sh`
 ac_fn_c_check_func "$LINENO" "$ac_func" "$as_ac_var"
@@ -11356,8 +11397,13 @@ fi
 
 # Check whether --with-multiarch was given.
 if test "${with_multiarch+set}" = set; then :
-  withval=$with_multiarch; libdir=$libdir/$withval
-root_libdir=$root_libdir/$withval
+  withval=$with_multiarch; if test "$withval" = "lib64"; then
+    libdir=/usr/lib64
+    root_libdir=/lib64
+else
+    libdir=$libdir/$withval
+    root_libdir=$root_libdir/$withval
+fi
 
 fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether we can link with -static" >&5
@@ -11425,9 +11471,12 @@ fi
 if test "$USE_INCLUDED_LIBINTL" = "yes" ; then
 	INCLUDES=$INCLUDES' -I$(top_builddir)/intl -I$(top_srcdir)/intl'
 fi
+if test -n "$WITH_DIET_LIBC" ; then
+	INCLUDES="$INCLUDES -D_REENTRANT"
+fi
 
 if test $cross_compiling = no; then
-   BUILD_CFLAGS="$CFLAGS $CPPFLAGS"
+   BUILD_CFLAGS="$CFLAGS $CPPFLAGS $INCLUDES -DHAVE_CONFIG_H"
    BUILD_LDFLAGS="$LDFLAGS"
 else
    BUILD_CFLAGS=

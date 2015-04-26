@@ -30,9 +30,9 @@ static void check_super_value(e2fsck_t ctx, const char *descr,
 {
 	struct		problem_context pctx;
 
-	if (((flags & MIN_CHECK) && (value < min_val)) ||
-	    ((flags & MAX_CHECK) && (value > max_val)) ||
-	    ((flags & LOG2_CHECK) && (value & (value - 1) != 0))) {
+	if ((flags & MIN_CHECK && value < min_val) ||
+	    (flags & MAX_CHECK && value > max_val) ||
+	    (flags & LOG2_CHECK && (value & (value - 1)) != 0)) {
 		clear_problem_context(&pctx);
 		pctx.num = value;
 		pctx.str = descr;
@@ -722,8 +722,11 @@ void check_super_block(e2fsck_t ctx)
 #ifndef EXT2_SKIP_UUID
 	/*
 	 * If the UUID field isn't assigned, assign it.
+	 * Skip if checksums are enabled and the filesystem is mounted,
+	 * if the id changes under the kernel remounting rw may fail.
 	 */
-	if (!(ctx->options & E2F_OPT_READONLY) && uuid_is_null(sb->s_uuid)) {
+	if (!(ctx->options & E2F_OPT_READONLY) && uuid_is_null(sb->s_uuid) &&
+	    (!csum_flag || !(ctx->mount_flags & EXT2_MF_MOUNTED))) {
 		if (fix_problem(ctx, PR_0_ADD_UUID, &pctx)) {
 			uuid_generate(sb->s_uuid);
 			fs->flags |= EXT2_FLAG_DIRTY;

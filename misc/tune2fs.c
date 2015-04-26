@@ -60,7 +60,7 @@ extern int optind;
 #include "jfs_user.h"
 #include "util.h"
 #include "blkid/blkid.h"
-#include "quota/mkquota.h"
+#include "quota/quotaio.h"
 
 #include "../version.h"
 #include "nls-enable.h"
@@ -98,6 +98,7 @@ static int usrquota, grpquota;
 
 int journal_size, journal_flags;
 char *journal_device;
+static blk64_t journal_location = ~0LL;
 
 static struct list_head blk_move_list;
 
@@ -368,7 +369,7 @@ static int check_fsck_needed(ext2_filsys fs)
 		return 0;
 	printf("\n%s\n", _(please_fsck));
 	if (mount_flags & EXT2_MF_READONLY)
-		printf(_("(and reboot afterwards!)\n"));
+		printf("%s", _("(and reboot afterwards!)\n"));
 	return 1;
 }
 
@@ -436,8 +437,9 @@ static int update_feature_set(ext2_filsys fs, char *features)
 				"read-only.\n"), stderr);
 			return 1;
 		}
-		if (sb->s_feature_incompat &
-		    EXT3_FEATURE_INCOMPAT_RECOVER) {
+		if ((sb->s_feature_incompat &
+		    EXT3_FEATURE_INCOMPAT_RECOVER) &&
+		    f_flag < 2) {
 			fputs(_("The needs_recovery flag is set.  "
 				"Please run e2fsck before clearing\n"
 				"the has_journal flag.\n"), stderr);
@@ -452,6 +454,19 @@ static int update_feature_set(ext2_filsys fs, char *features)
 				return 1;
 		}
 	}
+
+	if (FEATURE_ON(E2P_FEATURE_RO_INCOMPAT,
+		EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER)) {
+		if (sb->s_feature_incompat &
+			EXT2_FEATURE_INCOMPAT_META_BG) {
+			fputs(_("Setting filesystem feature 'sparse_super' "
+				"not supported\nfor filesystems with "
+				"the meta_bg feature enabled.\n"),
+				stderr);
+			return 1;
+		}
+	}
+
 	if (FEATURE_ON(E2P_FEATURE_INCOMPAT, EXT4_FEATURE_INCOMPAT_MMP)) {
 		int error;
 
@@ -658,7 +673,9 @@ static int add_journal(ext2_filsys fs)
 		goto err;
 	}
 	if (journal_device) {
-		check_plausibility(journal_device);
+		if (!check_plausibility(journal_device, CHECK_BLOCK_DEV,
+					NULL))
+			proceed_question(-1);
 		check_mount(journal_device, 0, _("journal"));
 #ifdef CONFIG_TESTIO_DEBUG
 		if (getenv("TEST_IO_FLAGS") || getenv("TEST_IO_BLOCK")) {
@@ -694,8 +711,13 @@ static int add_journal(ext2_filsys fs)
 		fflush(stdout);
 		journal_blocks = figure_journal_size(journal_size, fs);
 
-		retval = ext2fs_add_journal_inode(fs, journal_blocks,
-						  journal_flags);
+		if (journal_location_string)
+			journal_location =
+				parse_num_blocks2(journal_location_string,
+						  fs->super->s_log_block_size);
+		retval = ext2fs_add_journal_inode2(fs, journal_blocks,
+						   journal_location,
+						   journal_flags);
 		if (retval) {
 			fprintf(stderr, "\n");
 			com_err(program_name, retval, "%s",
@@ -754,10 +776,6 @@ static void handle_quota_options(ext2_filsys fs)
 	quota_release_context(&qctx);
 
 	if ((usrquota == QOPT_ENABLE) || (grpquota == QOPT_ENABLE)) {
-		fprintf(stderr, "%s", _("\nWarning: the quota feature is still "
-				  "under development\n"
-				  "See https://ext4.wiki.kernel.org/"
-				  "index.php/Quota for more information\n\n"));
 		fs->super->s_feature_ro_compat |= EXT4_FEATURE_RO_COMPAT_QUOTA;
 		ext2fs_mark_super_dirty(fs);
 	} else if (!fs->super->s_usr_quota_inum &&
@@ -929,7 +947,7 @@ static void parse_tune2fs_options(int argc, char **argv)
 			open_flag |= EXT2_FLAG_RW;
 			break;
 		case 'f': /* Force */
-			f_flag = 1;
+			f_flag++;
 			break;
 		case 'g':
 			resgid = strtoul(optarg, &tmp, 0);
@@ -1856,15 +1874,12 @@ static int tune2fs_setup_tdb(const char *name, io_manager *io_ptr)
 		goto alloc_fn_fail;
 	sprintf(tdb_file, "%s/tune2fs-%s.e2undo", tdb_dir, dev_name);
 
-	if (!access(tdb_file, F_OK)) {
-		if (unlink(tdb_file) < 0) {
-			retval = errno;
-			com_err(program_name, retval,
-				_("while trying to delete %s"),
-				tdb_file);
-			free(tdb_file);
-			return retval;
-		}
+	if ((unlink(tdb_file) < 0) && (errno != ENOENT)) {
+		retval = errno;
+		com_err(program_name, retval,
+			_("while trying to delete %s"), tdb_file);
+		free(tdb_file);
+		return retval;
 	}
 
 	set_undo_io_backing_manager(*io_ptr);
@@ -2035,7 +2050,7 @@ retry_open:
 		printf(_("Setting reserved blocks gid to %lu\n"), resgid);
 	}
 	if (i_flag) {
-		if (interval >= (1ULL << 32)) {
+		if ((unsigned long long)interval >= (1ULL << 32)) {
 			com_err(program_name, 0,
 				_("interval between checks is too big (%lu)"),
 				interval);
@@ -2069,10 +2084,18 @@ retry_open:
 	}
 	if (s_flag == 1) {
 		if (sb->s_feature_ro_compat &
-		    EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER)
+		    EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER) {
 			fputs(_("\nThe filesystem already has sparse "
 				"superblocks.\n"), stderr);
-		else {
+		} else if (sb->s_feature_incompat &
+			EXT2_FEATURE_INCOMPAT_META_BG) {
+			fputs(_("\nSetting the sparse superblock flag not "
+				"supported\nfor filesystems with "
+				"the meta_bg feature enabled.\n"),
+				stderr);
+			rc = 1;
+			goto closefs;
+		} else {
 			sb->s_feature_ro_compat |=
 				EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER;
 			sb->s_state &= ~EXT2_VALID_FS;
@@ -2082,7 +2105,7 @@ retry_open:
 		}
 	}
 	if (s_flag == 0) {
-		fputs(_("\nClearing the sparse superflag not supported.\n"),
+		fputs(_("\nClearing the sparse superblock flag not supported.\n"),
 		      stderr);
 		rc = 1;
 		goto closefs;
