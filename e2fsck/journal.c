@@ -62,7 +62,7 @@ int journal_bmap(journal_t *journal, blk64_t block, unsigned long long *phys)
 	retval= ext2fs_bmap2(inode->i_ctx->fs, inode->i_ino,
 			     &inode->i_ext2, NULL, 0, block, 0, &pblk);
 	*phys = pblk;
-	return (retval);
+	return (int) retval;
 #endif
 }
 
@@ -108,7 +108,7 @@ void sync_blockdev(kdev_t kdev)
 
 void ll_rw_block(int rw, int nr, struct buffer_head *bhp[])
 {
-	int retval;
+	errcode_t retval;
 	struct buffer_head *bh;
 
 	for (; nr > 0; --nr) {
@@ -123,7 +123,7 @@ void ll_rw_block(int rw, int nr, struct buffer_head *bhp[])
 				com_err(bh->b_ctx->device_name, retval,
 					"while reading block %llu\n",
 					bh->b_blocknr);
-				bh->b_err = retval;
+				bh->b_err = (int) retval;
 				continue;
 			}
 			bh->b_uptodate = 1;
@@ -138,7 +138,7 @@ void ll_rw_block(int rw, int nr, struct buffer_head *bhp[])
 				com_err(bh->b_ctx->device_name, retval,
 					"while writing block %llu\n",
 					bh->b_blocknr);
-				bh->b_err = retval;
+				bh->b_err = (int) retval;
 				continue;
 			}
 			bh->b_dirty = 0;
@@ -339,7 +339,7 @@ static errcode_t e2fsck_get_journal(e2fsck_t ctx, journal_t **ret_journal)
 #else
 		journal->j_inode = j_inode;
 		ctx->journal_io = ctx->fs->io;
-		if ((retval = journal_bmap(journal, 0, &start)) != 0)
+		if ((retval = (errcode_t) journal_bmap(journal, 0, &start)) != 0)
 			goto errout;
 #endif
 	} else {
@@ -391,6 +391,8 @@ static errcode_t e2fsck_get_journal(e2fsck_t ctx, journal_t **ret_journal)
 	io_channel_set_blksize(ctx->journal_io, ctx->fs->blocksize);
 
 	if (ext_journal) {
+		blk64_t maxlen;
+
 		if (ctx->fs->blocksize == 1024)
 			start = 1;
 		bh = getblk(dev_journal, start, ctx->fs->blocksize);
@@ -424,7 +426,8 @@ static errcode_t e2fsck_get_journal(e2fsck_t ctx, journal_t **ret_journal)
 			goto errout;
 		}
 
-		journal->j_maxlen = ext2fs_blocks_count(&jsuper);
+		maxlen = ext2fs_blocks_count(&jsuper);
+		journal->j_maxlen = (maxlen < 1ULL << 32) ? maxlen : (1ULL << 32) - 1;
 		start++;
 	}
 
@@ -518,7 +521,7 @@ static errcode_t e2fsck_journal_load(journal_t *journal)
 
 	ll_rw_block(READ, 1, &jbh);
 	if (jbh->b_err) {
-		com_err(ctx->device_name, jbh->b_err,
+		com_err(ctx->device_name, jbh->b_err, "%s",
 			_("reading journal superblock\n"));
 		return jbh->b_err;
 	}
@@ -701,7 +704,7 @@ static void e2fsck_journal_release(e2fsck_t ctx, journal_t *journal,
  * This function makes sure that the superblock fields regarding the
  * journal are consistent.
  */
-int e2fsck_check_ext3_journal(e2fsck_t ctx)
+errcode_t e2fsck_check_ext3_journal(e2fsck_t ctx)
 {
 	struct ext2_super_block *sb = ctx->fs->super;
 	journal_t *journal;
@@ -710,7 +713,7 @@ int e2fsck_check_ext3_journal(e2fsck_t ctx)
 	struct problem_context pctx;
 	problem_t problem;
 	int reset = 0, force_fsck = 0;
-	int retval;
+	errcode_t retval;
 
 	/* If we don't have any journal features, don't do anything more */
 	if (!(sb->s_feature_compat & EXT3_FEATURE_COMPAT_HAS_JOURNAL) &&
@@ -834,7 +837,7 @@ static errcode_t recover_ext3_journal(e2fsck_t ctx)
 {
 	struct problem_context	pctx;
 	journal_t *journal;
-	int retval;
+	errcode_t retval;
 
 	clear_problem_context(&pctx);
 
@@ -869,7 +872,7 @@ errout:
 	return retval;
 }
 
-int e2fsck_run_ext3_journal(e2fsck_t ctx)
+errcode_t e2fsck_run_ext3_journal(e2fsck_t ctx)
 {
 	io_manager io_ptr = ctx->fs->io->manager;
 	int blocksize = ctx->fs->blocksize;
@@ -916,7 +919,7 @@ int e2fsck_run_ext3_journal(e2fsck_t ctx)
 	ctx->fs->super->s_kbytes_written += kbytes_written;
 
 	/* Set the superblock flags */
-	e2fsck_clear_recover(ctx, recover_retval);
+	e2fsck_clear_recover(ctx, recover_retval != 0);
 
 	/*
 	 * Do one last sanity check, and propagate journal->s_errno to
@@ -942,7 +945,8 @@ void e2fsck_move_ext3_journal(e2fsck_t ctx)
 	ext2_ino_t		ino;
 	errcode_t		retval;
 	const char * const *	cpp;
-	int			group, mount_flags;
+	dgrp_t			group;
+	int			mount_flags;
 
 	clear_problem_context(&pctx);
 
@@ -1073,8 +1077,10 @@ int e2fsck_fix_ext3_journal_hint(e2fsck_t ctx)
 	if (!journal_name)
 		return 0;
 
-	if (stat(journal_name, &st) < 0)
+	if (stat(journal_name, &st) < 0) {
+		free(journal_name);
 		return 0;
+	}
 
 	if (st.st_rdev != sb->s_journal_dev) {
 		clear_problem_context(&pctx);

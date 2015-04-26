@@ -18,7 +18,7 @@ struct problem_context {
 	struct ext2_dir_entry *dirent;
 	blk64_t	blk, blk2;
 	e2_blkcnt_t	blkcount;
-	int		group;
+	dgrp_t		group;
 	__u32		csum1, csum2;
 	__u64	num;
 	const char *str;
@@ -248,6 +248,9 @@ struct problem_context {
 
 /* Checking group descriptor failed */
 #define PR_0_CHECK_DESC_FAILED			0x000045
+
+/* 64bit is set but extents are not set. */
+#define PR_0_64BIT_WITHOUT_EXTENTS		0x000048
 
 /*
  * Pass 1 errors

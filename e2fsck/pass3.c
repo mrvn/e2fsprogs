@@ -53,7 +53,7 @@ static ext2fs_inode_bitmap inode_done_map = 0;
 void e2fsck_pass3(e2fsck_t ctx)
 {
 	ext2_filsys fs = ctx->fs;
-	struct dir_info_iter *iter;
+	struct dir_info_iter *iter = NULL;
 #ifdef RESOURCE_TRACK
 	struct resource_track	rtrack;
 #endif
@@ -108,12 +108,11 @@ void e2fsck_pass3(e2fsck_t ctx)
 			if (check_directory(ctx, dir->ino, &pctx))
 				goto abort_exit;
 	}
-	e2fsck_dir_info_iter_end(ctx, iter);
 
 	/*
 	 * Force the creation of /lost+found if not present
 	 */
-	if ((ctx->flags & E2F_OPT_READONLY) == 0)
+	if ((ctx->options & E2F_OPT_READONLY) == 0)
 		e2fsck_get_lost_and_found(ctx, 1);
 
 	/*
@@ -123,6 +122,8 @@ void e2fsck_pass3(e2fsck_t ctx)
 	e2fsck_rehash_directories(ctx);
 
 abort_exit:
+	if (iter)
+		e2fsck_dir_info_iter_end(ctx, iter);
 	e2fsck_free_dir_info(ctx);
 	if (inode_loop_detect) {
 		ext2fs_free_inode_bitmap(inode_loop_detect);
@@ -198,9 +199,9 @@ static void check_root(e2fsck_t ctx)
 		return;
 	}
 
-	pctx.errcode = ext2fs_write_dir_block(fs, blk, block);
+	pctx.errcode = ext2fs_write_dir_block3(fs, blk, block, 0);
 	if (pctx.errcode) {
-		pctx.str = "ext2fs_write_dir_block";
+		pctx.str = "ext2fs_write_dir_block3";
 		fix_problem(ctx, PR_3_CREATE_ROOT_ERROR, &pctx);
 		ctx->flags |= E2F_FLAG_ABORT;
 		return;
@@ -444,7 +445,7 @@ ext2_ino_t e2fsck_get_lost_and_found(e2fsck_t ctx, int fix)
 		return 0;
 	}
 
-	retval = ext2fs_write_dir_block(fs, blk, block);
+	retval = ext2fs_write_dir_block3(fs, blk, block, 0);
 	ext2fs_free_mem(&block);
 	if (retval) {
 		pctx.errcode = retval;
@@ -712,12 +713,23 @@ static int expand_dir_proc(ext2_filsys fs,
 		last_blk = *blocknr;
 		return 0;
 	}
-	retval = ext2fs_new_block2(fs, last_blk, ctx->block_found_map,
-				  &new_blk);
-	if (retval) {
-		es->err = retval;
-		return BLOCK_ABORT;
+
+	if (blockcnt &&
+	    (EXT2FS_B2C(fs, last_blk) == EXT2FS_B2C(fs, last_blk + 1)))
+		new_blk = last_blk + 1;
+	else {
+		last_blk &= ~EXT2FS_CLUSTER_MASK(fs);
+		retval = ext2fs_new_block2(fs, last_blk, ctx->block_found_map,
+					  &new_blk);
+		if (retval) {
+			es->err = retval;
+			return BLOCK_ABORT;
+		}
+		es->newblocks++;
+		ext2fs_block_alloc_stats2(fs, new_blk, +1);
 	}
+	last_blk = new_blk;
+
 	if (blockcnt > 0) {
 		retval = ext2fs_new_dir_block(fs, 0, 0, &block);
 		if (retval) {
@@ -725,7 +737,7 @@ static int expand_dir_proc(ext2_filsys fs,
 			return BLOCK_ABORT;
 		}
 		es->num--;
-		retval = ext2fs_write_dir_block(fs, new_blk, block);
+		retval = ext2fs_write_dir_block3(fs, new_blk, block, 0);
 	} else {
 		retval = ext2fs_get_mem(fs->blocksize, &block);
 		if (retval) {
@@ -742,13 +754,32 @@ static int expand_dir_proc(ext2_filsys fs,
 	ext2fs_free_mem(&block);
 	*blocknr = new_blk;
 	ext2fs_mark_block_bitmap2(ctx->block_found_map, new_blk);
-	ext2fs_block_alloc_stats2(fs, new_blk, +1);
-	es->newblocks++;
 
 	if (es->num == 0)
 		return (BLOCK_CHANGED | BLOCK_ABORT);
 	else
 		return BLOCK_CHANGED;
+}
+
+/*
+ * Ensure that all blocks are marked in the block_found_map, since it's
+ * possible that the library allocated an extent node block or a block map
+ * block during the directory rebuilding; these new allocations are not
+ * captured in block_found_map.  This is bad since we could later use
+ * block_found_map to allocate more blocks.
+ */
+static int find_new_blocks_proc(ext2_filsys fs,
+				blk64_t	*blocknr,
+				e2_blkcnt_t	blockcnt,
+				blk64_t ref_block EXT2FS_ATTR((unused)),
+				int ref_offset EXT2FS_ATTR((unused)),
+				void	*priv_data)
+{
+	struct expand_dir_struct *es = (struct expand_dir_struct *) priv_data;
+	e2fsck_t	ctx = es->ctx;
+
+	ext2fs_mark_block_bitmap2(ctx->block_found_map, *blocknr);
+	return 0;
 }
 
 errcode_t e2fsck_expand_directory(e2fsck_t ctx, ext2_ino_t dir,
@@ -758,6 +789,7 @@ errcode_t e2fsck_expand_directory(e2fsck_t ctx, ext2_ino_t dir,
 	errcode_t	retval;
 	struct expand_dir_struct es;
 	struct ext2_inode	inode;
+	blk64_t		sz, before, after;
 
 	if (!(fs->flags & EXT2_FLAG_RW))
 		return EXT2_ET_RO_FILSYS;
@@ -779,11 +811,27 @@ errcode_t e2fsck_expand_directory(e2fsck_t ctx, ext2_ino_t dir,
 	es.newblocks = 0;
 	es.ctx = ctx;
 
+	before = ext2fs_free_blocks_count(fs->super);
 	retval = ext2fs_block_iterate3(fs, dir, BLOCK_FLAG_APPEND,
 				       0, expand_dir_proc, &es);
 
 	if (es.err)
 		return es.err;
+	after = ext2fs_free_blocks_count(fs->super);
+
+	/*
+	 * If the free block count has dropped by more than the blocks we
+	 * allocated ourselves, then we must've allocated some extent/map
+	 * blocks.  Therefore, we must iterate this dir's blocks again to
+	 * ensure that all newly allocated blocks are captured in
+	 * block_found_map.
+	 */
+	if ((before - after) > es.newblocks) {
+		retval = ext2fs_block_iterate3(fs, dir, BLOCK_FLAG_READ_ONLY,
+					       0, find_new_blocks_proc, &es);
+		if (es.err)
+			return es.err;
+	}
 
 	/*
 	 * Update the size and block count fields in the inode.
@@ -792,7 +840,9 @@ errcode_t e2fsck_expand_directory(e2fsck_t ctx, ext2_ino_t dir,
 	if (retval)
 		return retval;
 
-	inode.i_size = (es.last_block + 1) * fs->blocksize;
+	sz = (es.last_block + 1) * fs->blocksize;
+	inode.i_size = sz;
+	inode.i_size_high = sz >> 32;
 	ext2fs_iblk_add_blocks(fs, &inode, es.newblocks);
 	quota_data_add(ctx->qctx, &inode, dir, es.newblocks * fs->blocksize);
 

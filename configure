@@ -715,6 +715,7 @@ DEPSTATIC_LIBQUOTA
 STATIC_LIBQUOTA
 DEPLIBQUOTA
 LIBQUOTA
+QUOTA_MAN_COMMENT
 BLKID_CMT
 DEPPROFILED_LIBBLKID
 PROFILED_LIBBLKID
@@ -5185,6 +5186,9 @@ fi
 
 
 
+QUOTA_MAN_COMMENT='.\"'
+QUOTA_CMT=
+
 
 
 if test "x$ac_cv_env_PKG_CONFIG_set" != "xset"; then
@@ -5306,17 +5310,22 @@ fi
 if test "${enable_quota+set}" = set; then :
   enableval=$enable_quota; if test "$enableval" = "no"
 then
+	QUOTA_CMT=#
 	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: Disabling quota support" >&5
 $as_echo "Disabling quota support" >&6; }
 else
+	QUOTA_CMT=
 	$as_echo "#define CONFIG_QUOTA 1" >>confdefs.h
 
 	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: Enabling quota support" >&5
 $as_echo "Enabling quota support" >&6; }
+	QUOTA_MAN_COMMENT=""
+
 fi
 
 else
-  { $as_echo "$as_me:${as_lineno-$LINENO}: result: Disabling quota support by default" >&5
+  QUOTA_CMT=#
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: Disabling quota support by default" >&5
 $as_echo "Disabling quota support by default" >&6; }
 
 fi
@@ -10361,7 +10370,7 @@ fi
 done
 
 fi
-for ac_header in  	dirent.h 	errno.h 	execinfo.h 	getopt.h 	malloc.h 	mntent.h 	paths.h 	semaphore.h 	setjmp.h 	signal.h 	stdarg.h 	stdint.h 	stdlib.h 	termios.h 	termio.h 	unistd.h 	utime.h 	linux/falloc.h 	linux/fd.h 	linux/major.h 	net/if_dl.h 	netinet/in.h 	sys/disklabel.h 	sys/file.h 	sys/ioctl.h 	sys/mkdev.h 	sys/mman.h 	sys/prctl.h 	sys/queue.h 	sys/resource.h 	sys/select.h 	sys/socket.h 	sys/sockio.h 	sys/stat.h 	sys/syscall.h 	sys/sysmacros.h 	sys/time.h 	sys/types.h 	sys/un.h 	sys/wait.h
+for ac_header in  	dirent.h 	errno.h 	execinfo.h 	getopt.h 	malloc.h 	mntent.h 	paths.h 	semaphore.h 	setjmp.h 	signal.h 	stdarg.h 	stdint.h 	stdlib.h 	termios.h 	termio.h 	unistd.h 	utime.h 	linux/falloc.h 	linux/fd.h 	linux/major.h 	linux/loop.h 	net/if_dl.h 	netinet/in.h 	sys/disklabel.h 	sys/file.h 	sys/ioctl.h 	sys/mkdev.h 	sys/mman.h 	sys/prctl.h 	sys/queue.h 	sys/resource.h 	sys/select.h 	sys/socket.h 	sys/sockio.h 	sys/stat.h 	sys/syscall.h 	sys/sysmacros.h 	sys/time.h 	sys/types.h 	sys/un.h 	sys/wait.h
 do :
   as_ac_Header=`$as_echo "ac_cv_header_$ac_header" | $as_tr_sh`
 ac_fn_c_check_header_mongrel "$LINENO" "$ac_header" "$as_ac_Header" "$ac_includes_default"

@@ -276,7 +276,7 @@ static void check_ea_in_inode(e2fsck_t ctx, struct problem_context *pctx)
 	struct ext2_ext_attr_entry *entry;
 	char *start;
 	unsigned int storage_size, remain;
-	int problem = 0;
+	problem_t problem = 0;
 
 	inode = (struct ext2_inode_large *) pctx->inode;
 	storage_size = EXT2_INODE_SIZE(ctx->fs->super) - EXT2_GOOD_OLD_INODE_SIZE -
@@ -509,8 +509,8 @@ static void check_is_really_dir(e2fsck_t ctx, struct problem_context *pctx,
 	}
 }
 
-extern void e2fsck_setup_tdb_icount(e2fsck_t ctx, int flags,
-				    ext2_icount_t *ret)
+void e2fsck_setup_tdb_icount(e2fsck_t ctx, int flags,
+			     ext2_icount_t *ret)
 {
 	unsigned int		threshold;
 	ext2_ino_t		num_dirs;
@@ -716,8 +716,8 @@ void e2fsck_pass1(e2fsck_t ctx)
 		busted_fs_time = 1;
 
 	if ((fs->super->s_feature_incompat & EXT4_FEATURE_INCOMPAT_MMP) &&
-	    !(fs->super->s_mmp_block <= fs->super->s_first_data_block ||
-	      fs->super->s_mmp_block >= fs->super->s_blocks_count))
+	    fs->super->s_mmp_block > fs->super->s_first_data_block &&
+	    fs->super->s_mmp_block < ext2fs_blocks_count(fs->super))
 		ext2fs_mark_block_bitmap2(ctx->block_found_map,
 					  fs->super->s_mmp_block);
 
@@ -950,7 +950,7 @@ void e2fsck_pass1(e2fsck_t ctx)
 							inode_size, "pass1");
 			}
 		} else if (ino < EXT2_FIRST_INODE(fs->super)) {
-			int	problem = 0;
+			problem_t problem = 0;
 
 			ext2fs_mark_inode_bitmap2(ctx->inode_used_map, ino);
 			if (ino == EXT2_BOOT_LOADER_INO) {
@@ -1761,6 +1761,7 @@ void e2fsck_clear_inode(e2fsck_t ctx, ext2_ino_t ino,
 static void scan_extent_node(e2fsck_t ctx, struct problem_context *pctx,
 			     struct process_block_struct *pb,
 			     blk64_t start_block, blk64_t end_block,
+			     blk64_t eof_block,
 			     ext2_extent_handle_t ehandle)
 {
 	struct ext2fs_extent	extent;
@@ -1768,7 +1769,7 @@ static void scan_extent_node(e2fsck_t ctx, struct problem_context *pctx,
 	e2_blkcnt_t		blockcnt;
 	unsigned int		i;
 	int			is_dir, is_leaf;
-	errcode_t		problem;
+	problem_t		problem;
 	struct ext2_extent_info	info;
 
 	pctx->errcode = ext2fs_extent_get_info(ehandle, &info);
@@ -1789,7 +1790,9 @@ static void scan_extent_node(e2fsck_t ctx, struct problem_context *pctx,
 			problem = PR_1_EXTENT_BAD_START_BLK;
 		else if (extent.e_lblk < start_block)
 			problem = PR_1_OUT_OF_ORDER_EXTENTS;
-		else if (end_block && last_lblk > end_block)
+		else if ((end_block && last_lblk > end_block) &&
+			 (!(extent.e_flags & EXT2_EXTENT_FLAGS_UNINIT &&
+				last_lblk > eof_block)))
 			problem = PR_1_EXTENT_END_OUT_OF_BOUNDS;
 		else if (is_leaf && extent.e_len == 0)
 			problem = PR_1_EXTENT_LENGTH_ZERO;
@@ -1797,12 +1800,17 @@ static void scan_extent_node(e2fsck_t ctx, struct problem_context *pctx,
 			 (extent.e_pblk + extent.e_len) >
 			 ext2fs_blocks_count(ctx->fs->super))
 			problem = PR_1_EXTENT_ENDS_BEYOND;
+		else if (is_leaf && is_dir &&
+			 ((extent.e_lblk + extent.e_len) >
+			  (1 << (21 - ctx->fs->super->s_log_block_size))))
+			problem = PR_1_TOOBIG_DIR;
 
 		if (problem) {
 report_problem:
 			pctx->blk = extent.e_pblk;
 			pctx->blk2 = extent.e_lblk;
 			pctx->num = extent.e_len;
+			pctx->blkcount = extent.e_lblk + extent.e_len;
 			if (fix_problem(ctx, problem, pctx)) {
 				e2fsck_read_bitmaps(ctx);
 				pctx->errcode =
@@ -1850,7 +1858,7 @@ report_problem:
 					ext2fs_extent_fix_parents(ehandle);
 			}
 			scan_extent_node(ctx, pctx, pb, extent.e_lblk,
-					 last_lblk, ehandle);
+					 last_lblk, eof_block, ehandle);
 			if (pctx->errcode)
 				return;
 			pctx->errcode = ext2fs_extent_get(ehandle,
@@ -1953,6 +1961,7 @@ static void check_blocks_extents(e2fsck_t ctx, struct problem_context *pctx,
 	ext2_filsys		fs = ctx->fs;
 	ext2_ino_t		ino = pctx->ino;
 	errcode_t		retval;
+	blk64_t                 eof_lblk;
 
 	pctx->errcode = ext2fs_extent_open2(fs, ino, inode, &ehandle);
 	if (pctx->errcode) {
@@ -1970,7 +1979,9 @@ static void check_blocks_extents(e2fsck_t ctx, struct problem_context *pctx,
 		ctx->extent_depth_count[info.max_depth]++;
 	}
 
-	scan_extent_node(ctx, pctx, pb, 0, 0, ehandle);
+	eof_lblk = ((EXT2_I_SIZE(inode) + fs->blocksize - 1) >>
+		EXT2_BLOCK_SIZE_BITS(fs->super)) - 1;
+	scan_extent_node(ctx, pctx, pb, 0, 0, eof_lblk, ehandle);
 	if (pctx->errcode &&
 	    fix_problem(ctx, PR_1_EXTENT_ITERATE_FAILURE, pctx)) {
 		pb->num_blocks = 0;
@@ -1993,7 +2004,7 @@ static void check_blocks(e2fsck_t ctx, struct problem_context *pctx,
 	struct process_block_struct pb;
 	ext2_ino_t	ino = pctx->ino;
 	struct ext2_inode *inode = pctx->inode;
-	int		bad_size = 0;
+	unsigned	bad_size = 0;
 	int		dirty_inode = 0;
 	int		extent_fs;
 	__u64		size;
@@ -2152,7 +2163,8 @@ static void check_blocks(e2fsck_t ctx, struct problem_context *pctx,
 		}
 		pctx->num = 0;
 	}
-	if (LINUX_S_ISREG(inode->i_mode) && EXT2_I_SIZE(inode) >= 0x80000000UL)
+	if (LINUX_S_ISREG(inode->i_mode) &&
+	    ext2fs_needs_large_file_feature(EXT2_I_SIZE(inode)))
 		ctx->large_files++;
 	if ((pb.num_blocks != ext2fs_inode_i_blocks(fs, inode)) ||
 	    ((fs->super->s_feature_ro_compat &
@@ -2244,7 +2256,7 @@ static int process_block(ext2_filsys fs,
 	struct problem_context *pctx;
 	blk64_t	blk = *block_nr;
 	int	ret_code = 0;
-	int	problem = 0;
+	problem_t	problem = 0;
 	e2fsck_t	ctx;
 
 	p = (struct process_block_struct *) priv_data;
@@ -2555,14 +2567,16 @@ static int process_bad_block(ext2_filsys fs,
 	return 0;
 }
 
-static void new_table_block(e2fsck_t ctx, blk_t first_block, int group,
+static void new_table_block(e2fsck_t ctx, blk64_t first_block, dgrp_t group,
 			    const char *name, int num, blk64_t *new_block)
 {
 	ext2_filsys fs = ctx->fs;
 	dgrp_t		last_grp;
 	blk64_t		old_block = *new_block;
 	blk64_t		last_block;
-	int		i, is_flexbg, flexbg, flexbg_size;
+	dgrp_t		flexbg;
+	unsigned	flexbg_size;
+	int		i, is_flexbg;
 	char		*buf;
 	struct problem_context	pctx;
 

@@ -253,6 +253,18 @@ errcode_t ext2fs_open2(const char *name, const char *io_options,
 		retval = EXT2_ET_CORRUPT_SUPERBLOCK;
 		goto cleanup;
 	}
+
+	/*
+	 * bigalloc requires cluster-aware bitfield operations, which at the
+	 * moment means we need EXT2_FLAG_64BITS.
+	 */
+	if (EXT2_HAS_RO_COMPAT_FEATURE(fs->super,
+				       EXT4_FEATURE_RO_COMPAT_BIGALLOC) &&
+	    !(flags & EXT2_FLAG_64BITS)) {
+		retval = EXT2_ET_CANT_USE_LEGACY_BITMAPS;
+		goto cleanup;
+	}
+
 	if (!EXT2_HAS_RO_COMPAT_FEATURE(fs->super,
 					EXT4_FEATURE_RO_COMPAT_BIGALLOC) &&
 	    (fs->super->s_log_block_size != fs->super->s_log_cluster_size)) {
@@ -439,8 +451,20 @@ errcode_t ext2fs_set_data_io(ext2_filsys fs, io_channel new_io)
 
 errcode_t ext2fs_rewrite_to_io(ext2_filsys fs, io_channel new_io)
 {
+	errcode_t err;
+
 	if ((fs->flags & EXT2_FLAG_IMAGE_FILE) == 0)
 		return EXT2_ET_NOT_IMAGE_FILE;
+	err = io_channel_set_blksize(new_io, fs->blocksize);
+	if (err)
+		return err;
+	if ((new_io == fs->image_io) || (new_io == fs->io))
+		return 0;
+	if ((fs->image_io != fs->io) &&
+	    fs->image_io)
+		io_channel_close(fs->image_io);
+	if (fs->io)
+		io_channel_close(fs->io);
 	fs->io = fs->image_io = new_io;
 	fs->flags |= EXT2_FLAG_DIRTY | EXT2_FLAG_RW |
 		EXT2_FLAG_BB_DIRTY | EXT2_FLAG_IB_DIRTY;

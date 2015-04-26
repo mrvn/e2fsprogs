@@ -43,6 +43,7 @@ BSDLIB_INSTALL_DIR = $(root_libdir)
 .c.o:
 	$(E) "	CC $<"
 	$(Q) $(CC) $(ALL_CFLAGS) -c $< -o $@
+	$(Q) $(CHECK_CMD) $(ALL_CFLAGS) $<
 @PROFILE_CMT@	$(Q) $(CC) $(ALL_CFLAGS) -g -pg -o profiled/$*.o -c $<
 @CHECKER_CMT@	$(Q) $(CC) $(ALL_CFLAGS) -checker -g -o checker/$*.o -c $<
 @ELF_CMT@	$(Q) $(CC) $(ALL_CFLAGS) -fPIC -o elfshared/$*.o -c $<
@@ -62,7 +63,7 @@ compile_et: $(DEP_SUBSTITUTE) $(srcdir)/compile_et.sh.in
 DVI=texi2dvi
 DVIPS=dvips -o "$@"
 INFO=@MAKEINFO@
-HTML=texi2html -split_chapter
+HTML=makeinfo --html --no-split
 PS2PDF=ps2pdf
 
 com_err.ps : com_err.dvi
@@ -84,12 +85,9 @@ com_err.pdf: com_err.ps
 	$(E) "	PS2PDF $@"
 	-$(Q) $(PS2PDF) com_err.ps
 
-com_err_abt.html: $(srcdir)/com_err.texinfo
-	$(E) "	TEXI2HTML $@"
+com_err.html: $(srcdir)/com_err.texinfo
+	$(E) "	MAKEINFO $@"
 	-$(Q) $(HTML) $(srcdir)/com_err.texinfo
-	-$(Q) if test -d com_err ; then \
-		mv com_err/* . ; rmdir com_err ; \
-		fi
 
 com_err.pc: $(srcdir)/com_err.pc.in $(top_builddir)/config.status
 	$(E) "	CONFIG.STATUS $@"

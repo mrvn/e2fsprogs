@@ -73,7 +73,7 @@ static errcode_t mark_table_blocks(ext2_filsys fs,
 #define GE_CLSTR(x, y) (B2C(x) >= B2C(y))
 #define GT_CLSTR(x, y) (B2C(x) >  B2C(y))
 
-int lazy_itable_init;
+static int lazy_itable_init;
 
 /*
  * This is the top-level routine which does the dirty deed....
@@ -273,34 +273,36 @@ static void fix_uninit_block_bitmaps(ext2_filsys fs)
  */
 static void free_gdp_blocks(ext2_filsys fs,
 			    ext2fs_block_bitmap reserve_blocks,
-			    struct ext2_group_desc *gdp)
+			    ext2_filsys old_fs,
+			    dgrp_t group)
 {
-	blk_t	blk;
+	blk64_t	blk;
 	int	j;
 
-	if (gdp->bg_block_bitmap &&
-	    (gdp->bg_block_bitmap < ext2fs_blocks_count(fs->super))) {
-		ext2fs_block_alloc_stats(fs, gdp->bg_block_bitmap, -1);
-		ext2fs_mark_block_bitmap2(reserve_blocks,
-					 gdp->bg_block_bitmap);
+	blk = ext2fs_block_bitmap_loc(old_fs, group);
+	if (blk &&
+	    (blk < ext2fs_blocks_count(fs->super))) {
+		ext2fs_block_alloc_stats2(fs, blk, -1);
+		ext2fs_mark_block_bitmap2(reserve_blocks, blk);
 	}
 
-	if (gdp->bg_inode_bitmap &&
-	    (gdp->bg_inode_bitmap < ext2fs_blocks_count(fs->super))) {
-		ext2fs_block_alloc_stats(fs, gdp->bg_inode_bitmap, -1);
-		ext2fs_mark_block_bitmap2(reserve_blocks,
-					 gdp->bg_inode_bitmap);
+	blk = ext2fs_inode_bitmap_loc(old_fs, group);
+	if (blk &&
+	    (blk < ext2fs_blocks_count(fs->super))) {
+		ext2fs_block_alloc_stats2(fs, blk, -1);
+		ext2fs_mark_block_bitmap2(reserve_blocks, blk);
 	}
 
-	if (gdp->bg_inode_table == 0 ||
-	    (gdp->bg_inode_table >= ext2fs_blocks_count(fs->super)))
+	blk = ext2fs_inode_table_loc(old_fs, group);
+	if (blk == 0 ||
+	    (blk >= ext2fs_blocks_count(fs->super)))
 		return;
 
-	for (blk = gdp->bg_inode_table, j = 0;
+	for (j = 0;
 	     j < fs->inode_blocks_per_group; j++, blk++) {
 		if (blk >= ext2fs_blocks_count(fs->super))
 			break;
-		ext2fs_block_alloc_stats(fs, blk, -1);
+		ext2fs_block_alloc_stats2(fs, blk, -1);
 		ext2fs_mark_block_bitmap2(reserve_blocks, blk);
 	}
 }
@@ -467,11 +469,8 @@ retry:
 		 * and free any blocks associated with their metadata
 		 */
 		for (i = fs->group_desc_count;
-		     i < old_fs->group_desc_count; i++) {
-			free_gdp_blocks(fs, reserve_blocks,
-					ext2fs_group_desc(old_fs,
-						old_fs->group_desc, i));
-		}
+		     i < old_fs->group_desc_count; i++)
+			free_gdp_blocks(fs, reserve_blocks, old_fs, i);
 		retval = 0;
 		goto errout;
 	}
@@ -885,24 +884,34 @@ static errcode_t blocks_to_move(ext2_resize_t rfs)
 	fs = rfs->new_fs;
 
 	/*
-	 * If we're shrinking the filesystem, we need to move any group's
-	 * bitmaps which are beyond the end of the new filesystem.
+	 * If we're shrinking the filesystem, we need to move any
+	 * group's metadata blocks (either allocation bitmaps or the
+	 * inode table) which are beyond the end of the new
+	 * filesystem.
 	 */
 	new_size = ext2fs_blocks_count(fs->super);
 	if (new_size < ext2fs_blocks_count(old_fs->super)) {
 		for (g = 0; g < fs->group_desc_count; g++) {
+			int realloc = 0;
 			/*
-			 * ext2fs_allocate_group_table re-allocates bitmaps
-			 * which are set to block 0.
+			 * ext2fs_allocate_group_table will re-allocate any
+			 * metadata blocks whose location is set to zero.
 			 */
 			if (ext2fs_block_bitmap_loc(fs, g) >= new_size) {
 				ext2fs_block_bitmap_loc_set(fs, g, 0);
-				retval = ext2fs_allocate_group_table(fs, g, 0);
-				if (retval)
-					return retval;
+				realloc = 1;
 			}
 			if (ext2fs_inode_bitmap_loc(fs, g) >= new_size) {
 				ext2fs_inode_bitmap_loc_set(fs, g, 0);
+				realloc = 1;
+			}
+			if ((ext2fs_inode_table_loc(fs, g) +
+			     fs->inode_blocks_per_group) > new_size) {
+				ext2fs_inode_table_loc_set(fs, g, 0);
+				realloc = 1;
+			}
+
+			if (realloc) {
 				retval = ext2fs_allocate_group_table(fs, g, 0);
 				if (retval)
 					return retval;
@@ -1344,7 +1353,7 @@ errout:
  * take special care when mapping a source block number to its
  * destination block number.
  */
-__u64 extent_translate(ext2_filsys fs, ext2_extent extent, __u64 old_loc)
+static __u64 extent_translate(ext2_filsys fs, ext2_extent extent, __u64 old_loc)
 {
 	__u64 new_block = C2B(ext2fs_extent_translate(extent, B2C(old_loc)));
 
@@ -1860,7 +1869,7 @@ static errcode_t fix_resize_inode(ext2_filsys fs)
 		 * should never happen anyway since the filesystem
 		 * should be fsck'ed and we assume it is consistent.
 		 */
-		fprintf(stderr,
+		fprintf(stderr, "%s",
 			_("Should never happen: resize inode corrupt!\n"));
 		exit(1);
 	}
@@ -2035,10 +2044,11 @@ static int calc_group_overhead(ext2_filsys fs, blk64_t grp,
 /*
  * calcluate the minimum number of blocks the given fs can be resized to
  */
-blk64_t calculate_minimum_resize_size(ext2_filsys fs)
+blk64_t calculate_minimum_resize_size(ext2_filsys fs, int flags)
 {
 	ext2_ino_t inode_count;
-	blk64_t blks_needed, groups, data_blocks;
+	dgrp_t groups;
+	blk64_t blks_needed, data_blocks;
 	blk64_t grp, data_needed, last_start;
 	blk64_t overhead = 0;
 	int old_desc_blocks;
@@ -2056,6 +2066,11 @@ blk64_t calculate_minimum_resize_size(ext2_filsys fs)
 		EXT2_BLOCKS_PER_GROUP(fs->super);
 	groups = ext2fs_div64_ceil(blks_needed,
 				   EXT2_BLOCKS_PER_GROUP(fs->super));
+#ifdef RESIZE2FS_DEBUG
+	if (flags & RESIZE_DEBUG_MIN_CALC)
+		printf("fs has %d inodes, %d groups required.\n",
+		       inode_count, groups);
+#endif
 
 	/*
 	 * number of old-style block group descriptor blocks
@@ -2072,6 +2087,10 @@ blk64_t calculate_minimum_resize_size(ext2_filsys fs)
 
 	for (grp = 0; grp < fs->group_desc_count; grp++)
 		data_needed -= calc_group_overhead(fs, grp, old_desc_blocks);
+#ifdef RESIZE2FS_DEBUG
+	if (flags & RESIZE_DEBUG_MIN_CALC)
+		printf("fs requires %llu data blocks.\n", data_needed);
+#endif
 
 	/*
 	 * For ext4 we need to allow for up to a flex_bg worth of
@@ -2104,6 +2123,11 @@ blk64_t calculate_minimum_resize_size(ext2_filsys fs)
 
 		data_blocks -= overhead;
 	}
+#ifdef RESIZE2FS_DEBUG
+	if (flags & RESIZE_DEBUG_MIN_CALC)
+		printf("With %d group(s), we have %llu blocks available.\n",
+		       groups, data_blocks);
+#endif
 
 	/*
 	 * if we need more group descriptors in order to accomodate our data
@@ -2111,7 +2135,7 @@ blk64_t calculate_minimum_resize_size(ext2_filsys fs)
 	 */
 	while (data_needed > data_blocks) {
 		blk64_t remainder = data_needed - data_blocks;
-		blk64_t extra_grps;
+		dgrp_t extra_grps;
 
 		/* figure out how many more groups we need for the data */
 		extra_grps = ext2fs_div64_ceil(remainder,
@@ -2154,10 +2178,22 @@ blk64_t calculate_minimum_resize_size(ext2_filsys fs)
 					extra_groups);
 			extra_groups = groups % flexbg_size;
 		}
+#ifdef RESIZE2FS_DEBUG
+		if (flags & RESIZE_DEBUG_MIN_CALC)
+			printf("Added %d extra group(s), "
+			       "data_needed %llu, data_blocks %llu, "
+			       "last_start %llu\n",
+			       extra_grps, data_needed, data_blocks,
+			       last_start);
+#endif
 	}
 
 	/* now for the fun voodoo */
 	overhead = calc_group_overhead(fs, groups-1, old_desc_blocks);
+#ifdef RESIZE2FS_DEBUG
+	if (flags & RESIZE_DEBUG_MIN_CALC)
+		printf("Last group's overhead is %llu\n", overhead);
+#endif
 
 	/*
 	 * if this is the case then the last group is going to have data in it
@@ -2166,6 +2202,11 @@ blk64_t calculate_minimum_resize_size(ext2_filsys fs)
 	if (last_start < data_needed) {
 		blk64_t remainder = data_needed - last_start;
 
+#ifdef RESIZE2FS_DEBUG
+		if (flags & RESIZE_DEBUG_MIN_CALC)
+			printf("Need %llu data blocks in last group\n",
+			       remainder);
+#endif
 		/*
 		 * 50 is a magic number that mkfs/resize uses to see if its
 		 * even worth making/resizing the fs.  basically you need to
@@ -2180,6 +2221,10 @@ blk64_t calculate_minimum_resize_size(ext2_filsys fs)
 		overhead += 50;
 
 	overhead += fs->super->s_first_data_block;
+#ifdef RESIZE2FS_DEBUG
+	if (flags & RESIZE_DEBUG_MIN_CALC)
+		printf("Final size of last group is %lld\n", overhead);
+#endif
 
 	/*
 	 * since our last group doesn't have to be BLOCKS_PER_GROUP large, we
@@ -2188,6 +2233,20 @@ blk64_t calculate_minimum_resize_size(ext2_filsys fs)
 	 */
 	blks_needed = (groups-1) * EXT2_BLOCKS_PER_GROUP(fs->super);
 	blks_needed += overhead;
+
+	/*
+	 * Make sure blks_needed covers the end of the inode table in
+	 * the last block group.
+	 */
+	overhead = ext2fs_inode_table_loc(fs, groups-1) +
+		fs->inode_blocks_per_group;
+	if (blks_needed < overhead)
+		blks_needed = overhead;
+
+#ifdef RESIZE2FS_DEBUG
+	if (flags & RESIZE_DEBUG_MIN_CALC)
+		printf("Estimated blocks needed: %llu\n", blks_needed);
+#endif
 
 	/*
 	 * If at this point we've already added up more "needed" than
@@ -2200,9 +2259,15 @@ blk64_t calculate_minimum_resize_size(ext2_filsys fs)
 	 * enabled, in case we need to grow the extent tree.  The more
 	 * we shrink the file system, the more space we need.
 	 */
-	if (fs->super->s_feature_incompat & EXT3_FEATURE_INCOMPAT_EXTENTS)
-		blks_needed += (ext2fs_blocks_count(fs->super) - 
-				blks_needed)/500;
+	if (fs->super->s_feature_incompat & EXT3_FEATURE_INCOMPAT_EXTENTS) {
+		blk64_t safe_margin = (ext2fs_blocks_count(fs->super) -
+				       blks_needed)/500;
+#ifdef RESIZE2FS_DEBUG
+		if (flags & RESIZE_DEBUG_MIN_CALC)
+			printf("Extents safety margin: %llu\n", safe_margin);
+#endif
+		blks_needed += safe_margin;
+	}
 
 	return blks_needed;
 }

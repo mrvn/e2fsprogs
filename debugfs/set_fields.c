@@ -529,22 +529,20 @@ static errcode_t parse_hashalg(struct field_set_info *info,
 static errcode_t parse_bmap(struct field_set_info *info,
 			    char *field EXT2FS_ATTR((unused)), char *arg)
 {
-	unsigned long	num;
-	blk_t		blk;
+	blk64_t		blk;
 	errcode_t	retval;
 	char		*tmp;
 
-	num = strtoul(arg, &tmp, 0);
+	blk = strtoull(arg, &tmp, 0);
 	if (*tmp) {
 		fprintf(stderr, "Couldn't parse '%s' for field %s.\n",
 			arg, info->name);
 		return EINVAL;
 	}
-	blk = num;
 
-	retval = ext2fs_bmap(current_fs, set_ino,
+	retval = ext2fs_bmap2(current_fs, set_ino,
 			     (struct ext2_inode *) &set_inode,
-			     0, BMAP_SET, array_idx, &blk);
+			     NULL, BMAP_SET, array_idx, NULL, &blk);
 	if (retval) {
 		com_err("set_inode", retval, "while setting block map");
 	}
@@ -704,11 +702,14 @@ void do_set_block_group_descriptor(int argc, char *argv[])
 	int			size;
 
 	/*
-	 *Determine whether we are editing an ext2 or ext4 block
-	 * group descriptor
+	 * Determine whether we are editing an ext2 or ext4 block group
+	 * descriptor.  Descriptors larger than ext4_group_desc cannot
+	 * have their fields edited yet, because they do not have any
+	 * names assigned.  When that happens, this function needs to
+	 * be updated for the new descriptor struct and fields.
 	 */
-	if (current_fs && current_fs->super->s_feature_incompat &
-	    EXT4_FEATURE_INCOMPAT_64BIT) {
+	if (current_fs &&
+	    EXT2_DESC_SIZE(current_fs->super) >= EXT2_MIN_DESC_SIZE_64BIT) {
 		table = ext4_bg_fields;
 		edit = &set_gd4;
 		size = sizeof(set_gd4);
@@ -804,7 +805,7 @@ void do_set_mmp_value(int argc, char *argv[])
 		if (retval) {
 			com_err(argv[0], retval, "reading MMP block %llu.\n",
 				(long long)current_fs->super->s_mmp_block);
-			ext2fs_free_mem(mmp_s);
+			ext2fs_free_mem(&mmp_s);
 			return;
 		}
 		current_fs->mmp_buf = mmp_s;

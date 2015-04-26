@@ -99,6 +99,7 @@ errcode_t quota_remove_inode(ext2_filsys fs, int qtype)
 		quota_inode_truncate(fs, qf_ino);
 
 	ext2fs_mark_super_dirty(fs);
+	fs->flags &= ~EXT2_FLAG_SUPER_ONLY;
 	ext2fs_write_bitmaps(fs);
 	return 0;
 }
@@ -229,6 +230,7 @@ errcode_t quota_init_context(quota_ctx_t *qctx, ext2_filsys fs, int qtype)
 		err = ext2fs_get_mem(sizeof(dict_t), &dict);
 		if (err) {
 			log_err("Failed to allocate dictionary");
+			quota_release_context(&ctx);
 			return err;
 		}
 		ctx->quota_dict[i] = dict;
