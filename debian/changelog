@@ -1,3 +1,10 @@
+e2fsprogs (1.42.12-1.1) unstable; urgency=high
+
+  * Non-maintainer upload by the Security Team.
+  * Fix CVE-2015-1572: incomplete fix for CVE-2015-0247 (closes: #778948).
+
+ -- Michael Gilbert <mgilbert@debian.org>  Sun, 22 Feb 2015 01:50:57 +0000
+
 e2fsprogs (1.42.12-1) unstable; urgency=low
 
   * New upstream version
