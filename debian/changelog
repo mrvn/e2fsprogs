@@ -1,3 +1,11 @@
+e2fsprogs (1.42.5-1.1+deb7u1) stable-security; urgency=high
+
+  * Non-maintainer upload by the Security Team.
+  * Fix CVE-2015-0247: buffer overflow in ext file system open/close routines.
+  * Fix CVE-2015-1572: incomplete fix for CVE-2015-0247.
+
+ -- Michael Gilbert <mgilbert@debian.org>  Sun, 22 Feb 2015 04:11:53 +0000
+
 e2fsprogs (1.42.5-1.1) unstable; urgency=low
 
   * Non-maintainer upload.
