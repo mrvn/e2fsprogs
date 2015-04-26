@@ -52,6 +52,9 @@ extern int optind;
 
 const char * program_name = "e2image";
 char * device_name = NULL;
+char all_data;
+char output_is_blk;
+/* writing to blk device: don't skip zeroed blocks */
 
 static void lseek_error_and_exit(int errnum)
 {
@@ -84,7 +87,7 @@ static int get_bits_from_size(size_t size)
 
 static void usage(void)
 {
-	fprintf(stderr, _("Usage: %s [-rsIQ] device image_file\n"),
+	fprintf(stderr, _("Usage: %s [-rsIQa] device image_file\n"),
 		program_name);
 	exit (1);
 }
@@ -309,7 +312,7 @@ static int process_file_block(ext2_filsys fs EXT2FS_ATTR((unused)),
 			      int ref_offset EXT2FS_ATTR((unused)),
 			      void *priv_data EXT2FS_ATTR((unused)))
 {
-	if (blockcnt < 0) {
+	if (blockcnt < 0 || all_data) {
 		ext2fs_mark_block_bitmap2(meta_block_map, *block_nr);
 		meta_blocks_count++;
 	}
@@ -341,11 +344,13 @@ static void mark_table_blocks(ext2_filsys fs)
 		/*
 		 * Mark the blocks used for the inode table
 		 */
-		if (!ext2fs_bg_flags_test(fs, i, EXT2_BG_INODE_UNINIT) &&
+		if ((output_is_blk ||
+		     !ext2fs_bg_flags_test(fs, i, EXT2_BG_INODE_UNINIT)) &&
 		    ext2fs_inode_table_loc(fs, i)) {
 			unsigned int end = (unsigned) fs->inode_blocks_per_group;
 			/* skip unused blocks */
-			if (EXT2_HAS_RO_COMPAT_FEATURE(fs->super,
+			if (!output_is_blk &&
+			    EXT2_HAS_RO_COMPAT_FEATURE(fs->super,
 						       EXT4_FEATURE_RO_COMPAT_GDT_CSUM))
 				end -= (ext2fs_bg_itable_unused(fs, i) /
 					EXT2_INODES_PER_BLOCK(fs->super));
@@ -387,6 +392,8 @@ static int check_zero_block(char *buf, int blocksize)
 	char	*cp = buf;
 	int	left = blocksize;
 
+	if (output_is_blk)
+		return 0;
 	while (left > 0) {
 		if (*cp++)
 			return 0;
@@ -446,7 +453,7 @@ static void scramble_dir_block(ext2_filsys fs, blk64_t blk, char *buf)
 #endif
 			continue;
 		}
-		if (dirent->name_len + 8 > rec_len) {
+		if (dirent->name_len + 8U > rec_len) {
 			printf("Corrupt directory block %lu: "
 			       "bad name_len (%d)\n", (unsigned long) blk,
 			       dirent->name_len);
@@ -1134,7 +1141,7 @@ static void write_raw_image_file(ext2_filsys fs, int fd, int type, int flags)
 			if ((inode.i_flags & EXT4_EXTENTS_FL) ||
 			    inode.i_block[EXT2_IND_BLOCK] ||
 			    inode.i_block[EXT2_DIND_BLOCK] ||
-			    inode.i_block[EXT2_TIND_BLOCK]) {
+			    inode.i_block[EXT2_TIND_BLOCK] || all_data) {
 				retval = ext2fs_block_iterate3(fs,
 				       ino, BLOCK_FLAG_READ_ONLY, block_buf,
 				       process_file_block, &pb);
@@ -1164,7 +1171,7 @@ static void install_image(char *device, char *image_fn, int type)
 {
 	errcode_t retval;
 	ext2_filsys fs;
-	int open_flag = EXT2_FLAG_IMAGE_FILE;
+	int open_flag = EXT2_FLAG_IMAGE_FILE | EXT2_FLAG_64BITS;
 	int fd = 0;
 	io_manager	io_ptr;
 	io_channel	io;
@@ -1223,7 +1230,6 @@ static void install_image(char *device, char *image_fn, int type)
 	}
 
 	ext2fs_close (fs);
-	exit (0);
 }
 
 static struct ext2_qcow2_hdr *check_qcow2_image(int *fd, char *name)
@@ -1249,6 +1255,7 @@ int main (int argc, char ** argv)
 	int qcow2_fd = 0;
 	int fd = 0;
 	int ret = 0;
+	struct stat st;
 
 #ifdef ENABLE_NLS
 	setlocale(LC_MESSAGES, "");
@@ -1262,7 +1269,7 @@ int main (int argc, char ** argv)
 	if (argc && *argv)
 		program_name = *argv;
 	add_error_table(&et_ext2_error_table);
-	while ((c = getopt(argc, argv, "rsIQ")) != EOF)
+	while ((c = getopt(argc, argv, "rsIQa")) != EOF)
 		switch (c) {
 		case 'I':
 			flags |= E2IMAGE_INSTALL_FLAG;
@@ -1280,11 +1287,21 @@ int main (int argc, char ** argv)
 		case 's':
 			flags |= E2IMAGE_SCRAMBLE_FLAG;
 			break;
+		case 'a':
+			all_data = 1;
+			break;
 		default:
 			usage();
 		}
 	if (optind != argc - 2 )
 		usage();
+
+	if (all_data && !img_type) {
+		com_err(program_name, 0, "-a option can only be used "
+					 "with raw or QCOW2 images.");
+		exit(1);
+	}
+
 	device_name = argv[optind];
 	image_fn = argv[optind+1];
 
@@ -1327,7 +1344,14 @@ skip_device:
 					 "the stdout!\n");
 		exit(1);
 	}
-
+	if (fd != 1) {
+		if (fstat(fd, &st)) {
+			com_err(program_name, 0, "Can not stat output\n");
+			exit(1);
+		}
+		if (S_ISBLK(st.st_mode))
+			output_is_blk = 1;
+	}
 	if (flags & E2IMAGE_IS_QCOW2_FLAG) {
 		ret = qcow2_write_raw_image(qcow2_fd, fd, header);
 		if (ret) {

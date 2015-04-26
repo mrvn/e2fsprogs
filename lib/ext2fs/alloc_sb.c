@@ -47,7 +47,7 @@ int ext2fs_reserve_super_and_bgd(ext2_filsys fs,
 {
 	blk64_t	super_blk, old_desc_blk, new_desc_blk;
 	blk_t	used_blks;
-	int	j, old_desc_blocks, num_blocks;
+	int	old_desc_blocks, num_blocks;
 
 	ext2fs_super_and_bgd_loc2(fs, group, &super_blk,
 				  &old_desc_blk, &new_desc_blk, &used_blks);
@@ -67,10 +67,11 @@ int ext2fs_reserve_super_and_bgd(ext2_filsys fs,
 	if (old_desc_blk) {
 		if (fs->super->s_reserved_gdt_blocks && fs->block_map == bmap)
 			ext2fs_bg_flags_clear(fs, group, EXT2_BG_BLOCK_UNINIT);
-		for (j=0; j < old_desc_blocks; j++)
-			if (old_desc_blk + j < ext2fs_blocks_count(fs->super))
-				ext2fs_mark_block_bitmap2(bmap,
-							 old_desc_blk + j);
+		num_blocks = old_desc_blocks;
+		if (old_desc_blk + num_blocks >= ext2fs_blocks_count(fs->super))
+			num_blocks = ext2fs_blocks_count(fs->super) -
+				old_desc_blk;
+		ext2fs_mark_block_bitmap_range2(bmap, old_desc_blk, num_blocks);
 	}
 	if (new_desc_blk)
 		ext2fs_mark_block_bitmap2(bmap, new_desc_blk);
